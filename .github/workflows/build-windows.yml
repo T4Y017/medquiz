@@ -1,0 +1,41 @@
+name: Windows build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build app
+        run: pyinstaller --noconfirm --clean medquiz.spec
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer.iss
+
+      - name: Zip portable folder
+        shell: pwsh
+        run: Compress-Archive -Path dist\MedQuiz -DestinationPath MedQuiz_Portable.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MedQuiz-Windows
+          path: |
+            installer_output/MedQuiz_Kurulum.exe
+            MedQuiz_Portable.zip
