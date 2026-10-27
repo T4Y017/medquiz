@@ -2,7 +2,20 @@
 import json
 import sys
 
-d = json.load(open(sys.argv[1], encoding="utf-8"))
+# Windows konsolu (cp1252) Türkçe karakterlerde çökmesin
+for stream in (sys.stdout, sys.stderr):
+    try:
+        stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        pass
+
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception as e:  # noqa: BLE001
+    print(f"::error title=selftest::selftest.json okunamadı (uygulama çökmüş olabilir): {e}")
+    sys.exit(1)
+if len(sys.argv) > 2:
+    print(f"::notice title=selftest-exit::Uygulama çıkış kodu: {sys.argv[2]}")
 for r in d["results"]:
     status = "OK " if r["ok"] else "HATA"
     detail = json.dumps(r.get("info"), ensure_ascii=False) if r["ok"] else r.get("error", "")

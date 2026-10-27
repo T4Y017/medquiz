@@ -30,13 +30,15 @@ jobs:
         shell: pwsh
         env:
           QT_QPA_PLATFORM: offscreen
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: utf-8
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           pip install reportlab
           python tools/make_test_book.py test_book.pdf 600
           $p = Start-Process -FilePath "dist\MedQuiz\MedQuiz.exe" -ArgumentList "--selftest","--pdf","test_book.pdf","--out","selftest.json" -Wait -PassThru
-          python tools/annotate_selftest.py selftest.json
+          python tools/annotate_selftest.py selftest.json $p.ExitCode
           if ($p.ExitCode -ne 0) { Write-Error "Self-test failed"; exit 1 }
 
       - name: Build installer
