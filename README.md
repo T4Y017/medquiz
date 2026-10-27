@@ -161,7 +161,7 @@ satırlarını içerir; API anahtarları otomatik olarak çıkarılır.
 
 ## Otomatik test (geliştirici)
 
-Her sürüm etiketinde (`v*`) GitHub Actions, paketlenmiş exe'yi gerçek bir Windows makinesinde
+`main` dalına yapılan her güncellemede GitHub Actions, paketlenmiş exe'yi gerçek bir Windows makinesinde
 `MedQuiz.exe --selftest` ile sınar: PDF okuma, arama, anlamsal model, arayüz ve PDF dışa aktarma.
 Depo ayarlarında **Secrets → Actions** altına `GEMINI_API_KEY` (ve/veya `ANTHROPIC_API_KEY`) eklenirse
 gerçek yapay zekâ ile quiz, puanlama ve vaka üretimi de test edilir. Anahtar loglarda görünmez.
