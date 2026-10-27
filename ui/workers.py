@@ -27,16 +27,23 @@ class Task(QRunnable):
     def cancel(self) -> None:
         self.cancelled = True
 
+    def _emit(self, sig, *args) -> None:
+        # Uygulama kapanırken sinyal nesnesi silinmiş olabilir; bu durumda sessizce geç
+        try:
+            sig.emit(*args)
+        except RuntimeError:
+            self.cancelled = True
+
     def run(self) -> None:  # worker thread
         try:
-            res = self.fn(self.signals.progress.emit, self)
+            res = self.fn(lambda x: self._emit(self.signals.progress, x), self)
         except Exception as e:  # noqa: BLE001
             traceback.print_exc()
-            self.signals.error.emit(str(e) or e.__class__.__name__)
+            self._emit(self.signals.error, str(e) or e.__class__.__name__)
         else:
-            self.signals.result.emit(res)
+            self._emit(self.signals.result, res)
         finally:
-            self.signals.finished.emit()
+            self._emit(self.signals.finished)
 
 
 class Runner:

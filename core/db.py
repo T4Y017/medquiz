@@ -43,6 +43,14 @@ CREATE TABLE IF NOT EXISTS questions (
     answered_at REAL,
     profile TEXT DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS chats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    profile TEXT DEFAULT '',
+    messages TEXT NOT NULL DEFAULT '[]'
+);
 CREATE TABLE IF NOT EXISTS cases (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at REAL NOT NULL,
@@ -256,6 +264,49 @@ class Database:
                 "SELECT DISTINCT profile FROM questions WHERE profile != '' ORDER BY profile"
             ).fetchall()
             return [r[0] for r in rows]
+
+    # ---------------------------------------------------------------- chats
+    def save_chat(self, chat_id: int | None, title: str, messages: list[dict], profile: str = "") -> int:
+        now = time.time()
+        payload = json.dumps(messages, ensure_ascii=False)
+        with self._lock:
+            if chat_id is None:
+                cur = self.conn.execute(
+                    "INSERT INTO chats(created_at, updated_at, title, profile, messages) VALUES (?,?,?,?,?)",
+                    (now, now, title, profile, payload))
+                chat_id = cur.lastrowid
+            else:
+                self.conn.execute("UPDATE chats SET updated_at = ?, title = ?, messages = ? WHERE id = ?",
+                                  (now, title, payload, chat_id))
+            self.conn.commit()
+            return chat_id
+
+    def list_chats(self, profile: str | None = None, limit: int = 300) -> list[dict]:
+        with self._lock:
+            sql = "SELECT id, created_at, updated_at, title, profile FROM chats"
+            params: tuple = ()
+            if profile:
+                sql += " WHERE profile = ?"
+                params = (profile,)
+            sql += " ORDER BY updated_at DESC LIMIT ?"
+            return [dict(r) for r in self.conn.execute(sql, params + (limit,)).fetchall()]
+
+    def get_chat(self, chat_id: int) -> dict | None:
+        with self._lock:
+            r = self.conn.execute("SELECT * FROM chats WHERE id = ?", (chat_id,)).fetchone()
+        if not r:
+            return None
+        d = dict(r)
+        try:
+            d["messages"] = json.loads(d["messages"] or "[]")
+        except json.JSONDecodeError:
+            d["messages"] = []
+        return d
+
+    def delete_chat(self, chat_id: int) -> None:
+        with self._lock:
+            self.conn.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
+            self.conn.commit()
 
     # ---------------------------------------------------------------- cases
     def save_case(self, title: str, topic: str, level: str, payload: dict, profile: str = "") -> int:
