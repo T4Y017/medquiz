@@ -162,7 +162,38 @@ def run(pdf: str | None, out: str) -> int:
 
         _step(results, f"{prov}: quiz üretimi", quiz, required=False)
         _step(results, f"{prov}: klasik cevap puanlama", grade, required=False)
+        def chat(qe=qe):
+            # Ayarlar > Test ile aynı mini görev
+            from .llm import LLMClient
+            c = LLMClient(s, prov)
+            c.complete_json("Yalnızca geçerli JSON döndür.",
+                            'Hipoglisemi hakkında tek soru: {"question": "...", "options": ["a","b","c","d"], '
+                            '"answer_index": 0}', max_tokens=600, temperature=0.3)
+            # Sohbet: akış (stream) + çok turlu takip sorusu
+            stream, hits, llm = qe.chat_stream("Diyabetik ketoasidozda potasyum neden önemli?", [])
+            a1 = "".join(stream)
+            if len(a1.strip()) < 20:
+                raise RuntimeError(f"Sohbet yanıtı boş/kısa: {a1!r}")
+            hist = [{"role": "user", "content": "Diyabetik ketoasidozda potasyum neden önemli?"},
+                    {"role": "assistant", "content": a1}]
+            stream2, _, llm2 = qe.chat_stream("Peki insüline ne zaman başlanır?", hist)
+            a2 = "".join(stream2)
+            if len(a2.strip()) < 20:
+                raise RuntimeError(f"Takip yanıtı boş/kısa: {a2!r}")
+            return {"chars": [len(a1), len(a2)], "cites_sources": "[K" in a1, "sources": len(hits),
+                    "model": llm.label, "sample": a1[:160]}
+
+        def case_chat(ce=ce):
+            c = ce.generate(CaseRequest(topic="akut pankreatit", level="Öğrenci", paraclinic=True,
+                                        test_count=2))["payload"]
+            ans = "".join(ce.ask_stream(c, 1, False, "Bu hastada ilk ne düşünmeliyim?", []))
+            if len(ans.strip()) < 20:
+                raise RuntimeError(f"Vaka sohbeti boş: {ans!r}")
+            return {"chars": len(ans), "sample": ans[:160]}
+
         _step(results, f"{prov}: vaka üretimi (paraklinik + test)", case, required=False)
+        _step(results, f"{prov}: sohbet (akış + takip sorusu)", chat, required=False)
+        _step(results, f"{prov}: vaka sohbeti", case_chat, required=False)
 
     log_tail = ""
     lp = Path(data_dir()) / "medquiz.log"
