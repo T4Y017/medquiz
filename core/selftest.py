@@ -126,6 +126,15 @@ def run(pdf: str | None, out: str) -> int:
 
     _step(results, "Arayüz + PDF dışa aktarma", gui)
 
+    def update_check():
+        from . import updater
+        from .version import __version__
+        info = updater.check()
+        return {"current": __version__, "newer_available": info.version if info else None,
+                "can_self_install": updater.can_self_install()}
+
+    _step(results, "Güncelleme kontrolü (GitHub Releases)", update_check, required=False)
+
     # --- gerçek yapay zekâ (anahtar varsa)
     for prov, env in (("gemini", "GEMINI_API_KEY"), ("anthropic", "ANTHROPIC_API_KEY")):
         key = os.environ.get(env, "").strip()

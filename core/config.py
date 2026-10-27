@@ -61,6 +61,7 @@ class Settings:
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.8-flash"
     fallback_enabled: bool = True
+    auto_update: bool = True
     use_embeddings: bool = True
     embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     user_name: str = ""

@@ -15,7 +15,7 @@ for _name in ("stdout", "stderr"):
 BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtCore import Qt, QTimer  # noqa: E402
 from PySide6.QtGui import QIcon  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication, QComboBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow,
@@ -32,7 +32,7 @@ from ui.quiz_page import QuizPage  # noqa: E402
 from ui.settings_page import SettingsPage  # noqa: E402
 from ui.stats_page import StatsPage  # noqa: E402
 
-VERSION = "1.3.0"
+from core.version import __version__ as VERSION  # noqa: E402
 
 
 class MainWindow(QMainWindow):
@@ -111,6 +111,10 @@ class MainWindow(QMainWindow):
 
         self.chat.quiz_btn.clicked.connect(self._quiz_from_chat)
         ctx.settings_changed.connect(self._apply_style)
+
+        from ui.update_ui import UpdateController
+        self.updater = UpdateController(ctx, self)
+        self.settings.attach_updater(self.updater)
         ctx.settings_changed.connect(self._fill_ai)
         self._fill_ai()
 
@@ -200,6 +204,10 @@ def main() -> int:
     win = MainWindow(ctx)
     win.show()
     ctx.warmup_index()
+    from core import updater as _upd
+    _upd.cleanup_old_downloads()
+    if ctx.settings.auto_update:
+        QTimer.singleShot(4000, lambda: win.updater.check(silent=True))
     return app.exec()
 
 

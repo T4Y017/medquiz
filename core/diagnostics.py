@@ -18,10 +18,7 @@ def redact(text: str) -> str:
 def build_report(ctx) -> str:
     s = ctx.settings
     lines = ["MedQuiz tanılama raporu", "=" * 30]
-    try:
-        from app import VERSION  # type: ignore
-    except Exception:  # noqa: BLE001
-        VERSION = "?"
+    from .version import __version__ as VERSION
     lines.append(f"Sürüm: {VERSION} · Python {sys.version.split()[0]} · {platform.platform()}")
     lines.append(f"Birincil: {s.provider} · yedekleme: {'açık' if s.fallback_enabled else 'kapalı'}")
     for p in PROVIDERS:

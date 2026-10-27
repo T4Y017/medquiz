@@ -8,6 +8,13 @@ on:
     paths-ignore:
       - "**.md"
 
+permissions:
+  contents: write   # sürüm (Release) yayınlamak için
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: windows-latest
@@ -22,6 +29,16 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
+
+      - name: Set version
+        id: ver
+        shell: pwsh
+        run: |
+          $base = (Select-String -Path core/version.py -Pattern '__version__ = "(\d+)\.(\d+)\.').Matches[0].Groups
+          $v = "$($base[1].Value).$($base[2].Value).${{ github.run_number }}"
+          (Get-Content core/version.py -Raw) -replace '__version__ = "[^"]+"', "__version__ = `"$v`"" | Set-Content core/version.py -Encoding utf8
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "Version: $v"
 
       - name: Build app
         run: pyinstaller --noconfirm --clean medquiz.spec
@@ -45,7 +62,7 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer.iss
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ steps.ver.outputs.version }}" installer.iss
 
       - name: Zip portable folder
         shell: pwsh
@@ -58,3 +75,16 @@ jobs:
             installer_output/MedQuiz_Kurulum.exe
             MedQuiz_Portable.zip
             selftest.json
+
+      - name: Publish release (uygulama içi güncelleme bunu kullanır)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          $hash = (Get-FileHash installer_output/MedQuiz_Kurulum.exe -Algorithm SHA256).Hash.ToLower()
+          $msg = (git log -1 --pretty=%B) -join "`n"
+          $notes = "$msg`n`n---`nsha256: $hash"
+          Set-Content -Path notes.md -Value $notes -Encoding utf8
+          gh release create "v$v" installer_output/MedQuiz_Kurulum.exe --title "MedQuiz $v" --notes-file notes.md --latest

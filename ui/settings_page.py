@@ -103,6 +103,7 @@ class SettingsPage(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         outer.addWidget(scroll)
         body = QWidget()
         body.setObjectName("page")
@@ -144,10 +145,14 @@ class SettingsPage(QWidget):
             self.primary.addItem(v["label"], k)
         self.primary.setCurrentIndex(max(0, self.primary.findData(s.provider)))
         f.addRow("Birincil yapay zekâ", self.primary)
-        self.fallback = QCheckBox("Yanıt alınamazsa (yoğunluk, kota, bağlantı) otomatik yedeğe geç: önce aynı "
-                                  "sağlayıcının hafif modeli, sonra diğer sağlayıcı")
+        self.fallback = QCheckBox("Yanıt alınamazsa otomatik olarak yedeğe geç")
         self.fallback.setChecked(s.fallback_enabled)
         f.addRow("", self.fallback)
+        fb_note = QLabel("Yoğunluk, hız sınırı veya bağlantı sorununda önce aynı sağlayıcının hafif modeli "
+                         "(Gemini Flash-Lite / Claude Haiku), sonra diğer sağlayıcı denenir.")
+        fb_note.setObjectName("muted")
+        fb_note.setWordWrap(True)
+        f.addRow("", fb_note)
         cl.addLayout(f)
         note = QLabel("ℹ️ Claude Pro veya Google AI Pro/Gemini Advanced gibi sohbet abonelikleri burada kullanılamaz; "
                       "API anahtarları ayrı faturalandırılır. Anahtarlar yalnızca bu bilgisayarda saklanır.")
@@ -183,6 +188,31 @@ class SettingsPage(QWidget):
         f2.addRow("Yazı boyutu", self.font)
         root.addWidget(card2)
 
+        # --- güncellemeler
+        from core.version import __version__
+        card3 = QFrame()
+        card3.setObjectName("card")
+        f3 = QFormLayout(card3)
+        f3.setContentsMargins(20, 16, 20, 16)
+        f3.setVerticalSpacing(10)
+        h3 = QLabel("Güncellemeler")
+        h3.setObjectName("h2")
+        f3.addRow(h3)
+        f3.addRow("Kullanılan sürüm", QLabel(__version__))
+        self.auto_upd = QCheckBox("Açılışta yeni sürüm olup olmadığını kontrol et")
+        self.auto_upd.setChecked(s.auto_update)
+        f3.addRow("", self.auto_upd)
+        urow = QHBoxLayout()
+        self.upd_btn = QPushButton("Güncellemeleri şimdi kontrol et")
+        self.upd_btn.setEnabled(False)
+        self.upd_lbl = QLabel("")
+        self.upd_lbl.setObjectName("muted")
+        self.upd_lbl.setWordWrap(True)
+        urow.addWidget(self.upd_btn)
+        urow.addWidget(self.upd_lbl, 1)
+        f3.addRow("", urow)
+        root.addWidget(card3)
+
         row = QHBoxLayout()
         diag = QPushButton("Tanılama raporunu kopyala")
         diag.setToolTip("Sorun yaşarsanız bu raporu (API anahtarları çıkarılmış hâlde) destek için paylaşabilirsiniz.")
@@ -208,6 +238,11 @@ class SettingsPage(QWidget):
         root.addWidget(disc)
         root.addStretch()
         ctx.settings_changed.connect(self._sync_primary)
+
+    def attach_updater(self, upd):
+        self.upd_btn.setEnabled(True)
+        self.upd_btn.clicked.connect(lambda: upd.check(silent=False))
+        upd.status.connect(self.upd_lbl.setText)
 
     def copy_diagnostics(self):
         from PySide6.QtWidgets import QApplication
@@ -237,6 +272,7 @@ class SettingsPage(QWidget):
         s.default_count = self.count.value()
         s.use_embeddings = self.emb.isChecked()
         s.font_size = self.font.value()
+        s.auto_update = self.auto_upd.isChecked()
         if not s.key_for(s.provider) and s.has_any_key:
             first = s.configured_providers()[0]
             QMessageBox.information(

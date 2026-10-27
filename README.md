@@ -35,6 +35,15 @@ Kısayollar: **A–E** veya **1–5** şık seçer, **Enter** sonraki soruya ge�
 
 ---
 
+## 0) Kurulum ve güncellemeler (aile için)
+
+1. **Releases** sayfasından en son `MedQuiz_Kurulum.exe`'yi indir ve kur (yalnızca ilk sefer).
+2. Sonrası otomatik: MedQuiz açılışta yeni sürüm olup olmadığına bakar; varsa **"Şimdi güncelle"** der,
+   tek tıkla indirir, SHA-256 ile doğrular, kurar ve yeniden açılır. Kütüphane, sohbetler, vakalar ve ayarlar korunur.
+3. Elle kontrol: Ayarlar → Güncellemeler → **Güncellemeleri şimdi kontrol et**.
+
+> Otomatik güncelleme için depo **herkese açık (public)** kalmalı; gizli depoda uygulama yeni sürümleri göremez.
+
 ## 1) Hızlı başlangıç (kaynak koddan çalıştırma)
 
 ```bat
@@ -135,6 +144,8 @@ core/config.py         ayarlar (%APPDATA%\MedQuiz\settings.json)
 core/db.py             SQLite: belgeler, parçalar, embedding'ler, soru geçmişi
 core/ingest.py         yükleyiciler + parçalama
 core/retrieval.py      BM25 + embedding hibrit arama, quiz bağlamı seçimi
+core/updater.py        uygulama içi güncelleme (GitHub Releases, SHA-256 doğrulama, sessiz kurulum)
+core/version.py        sürüm numarası (CI tarafından yazılır)
 core/llm.py            Claude / Gemini / OpenAI istemcisi, otomatik yedekleme (RoutedLLM), JSON ayrıştırma
 core/quiz.py           soru üretimi, puanlama, sohbet istemleri (prompt'lar burada)
 core/case.py           aşamalı vaka üretimi, aşama puanlama, Sokratik vaka sohbeti
@@ -165,10 +176,11 @@ satırlarını içerir; API anahtarları otomatik olarak çıkarılır.
 
 ## Otomatik test (geliştirici)
 
-`main` dalına yapılan her güncellemede GitHub Actions, paketlenmiş exe'yi gerçek bir Windows makinesinde
+`main` dalına yapılan her güncellemede GitHub Actions sürüm numarasını (`1.4.<derleme no>`) verir, paketlenmiş exe'yi gerçek bir Windows makinesinde
 `MedQuiz.exe --selftest` ile sınar: PDF okuma, arama, anlamsal model, arayüz ve PDF dışa aktarma.
 Depo ayarlarında **Secrets → Actions** altına `GEMINI_API_KEY` (ve/veya `ANTHROPIC_API_KEY`) eklenirse
 gerçek yapay zekâ ile quiz, puanlama ve vaka üretimi de test edilir. Anahtar loglarda görünmez.
+Testler geçerse kurulum dosyası **GitHub Release** olarak yayınlanır; uygulama içi güncelleyici bunu kullanır.
 
 ## Sorun giderme
 

@@ -1,6 +1,8 @@
 ; Inno Setup betiği — dist\MedQuiz klasöründen tek bir kurulum dosyası üretir.
 #define AppName "MedQuiz"
-#define AppVersion "1.3.0"
+#ifndef AppVersion
+  #define AppVersion "1.4.0"
+#endif
 
 [Setup]
 AppId={{6B1C2E7A-4D3F-4B8E-9A61-2F0C5D7E8A11}
@@ -18,6 +20,10 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
+; Güncelleme sırasında çalışan MedQuiz'i kapat; uygulama içi güncelleyici sessiz kurulum kullanır
+CloseApplications=force
+RestartApplications=no
+UsePreviousAppDir=yes
 
 [Languages]
 Name: "turkish"; MessagesFile: "compiler:Languages\Turkish.isl"
@@ -34,4 +40,4 @@ Name: "{group}\{#AppName} Kaldır"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\MedQuiz.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\MedQuiz.exe"; Description: "MedQuiz'i başlat"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\MedQuiz.exe"; Description: "MedQuiz'i başlat"; Flags: nowait postinstall
