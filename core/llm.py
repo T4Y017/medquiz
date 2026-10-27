@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from typing import Iterator
 
 from .config import PROVIDERS, Settings
@@ -12,9 +13,11 @@ log = logging.getLogger(__name__)
 
 
 class LLMError(Exception):
-    def __init__(self, msg: str, fallback_ok: bool = False):
+    def __init__(self, msg: str, fallback_ok: bool = False, transient: bool = False, provider_wide: bool = False):
         super().__init__(msg)
-        self.fallback_ok = fallback_ok  # başka bir sağlayıcıyla denemek mantıklı mı?
+        self.provider_wide = provider_wide  # anahtar/kota/izin: aynı sağlayıcının diğer modelleri de başarısız olur
+        self.fallback_ok = fallback_ok  # başka bir model/sağlayıcıyla denemek mantıklı mı?
+        self.transient = transient      # geçici (yoğunluk, hız sınırı, zaman aşımı): kısa bekleyip tekrar denenebilir
 
 
 def _classify(e: Exception, provider: str) -> LLMError:
@@ -24,22 +27,25 @@ def _classify(e: Exception, provider: str) -> LLMError:
     status = getattr(e, "status_code", None)
     if status == 401 or "authentication" in low or "invalid x-api-key" in low or "incorrect api key" in low \
             or "api key not valid" in low or "api_key_invalid" in low:
-        return LLMError(f"{name} API anahtarı geçersiz. Ayarlar sekmesinden kontrol edin.", True)
+        return LLMError(f"{name} API anahtarı geçersiz. Ayarlar sekmesinden kontrol edin.", True, provider_wide=True)
     if "credit" in low or "billing" in low or "quota" in low or "insufficient" in low or "resource_exhausted" in low:
         if provider == "gemini":
             return LLMError("Gemini kullanım sınırına ulaşıldı (ücretsiz katmanda dakikalık ve günlük istek sınırı "
-                            "vardır). Bir dakika bekleyip tekrar deneyin; sürekli oluyorsa günlük sınır dolmuştur.", True)
-        return LLMError(f"{name} hesabında bakiye/kota yok ya da günlük kota doldu.", True)
+                            "vardır). Bir dakika bekleyip tekrar deneyin; sürekli oluyorsa günlük sınır dolmuştur.", True,
+                            transient=True)
+        return LLMError(f"{name} hesabında bakiye/kota yok ya da günlük kota doldu.", True, provider_wide=True)
     if status == 429 or ("rate" in low and "limit" in low):
-        return LLMError(f"{name}: çok sık istek gönderildi (hız sınırı). Biraz bekleyip tekrar deneyin.", True)
+        return LLMError(f"{name}: çok sık istek gönderildi (hız sınırı). Biraz bekleyip tekrar deneyin.", True, True)
     if status == 404 or "not_found" in low or ("model" in low and "not" in low and "found" in low):
         return LLMError(f"{name}: seçilen model bulunamadı. Ayarlar'dan başka bir model seçin.", True)
     if "connection" in low or "timed out" in low or "timeout" in low:
-        return LLMError(f"{name} sunucusuna bağlanılamadı. İnternet bağlantınızı kontrol edin.", True)
+        if "timed out" in low or "timeout" in low:
+            return LLMError(f"{name} zamanında yanıt vermedi (sunucu yoğun olabilir).", True, True)
+        return LLMError(f"{name} sunucusuna bağlanılamadı. İnternet bağlantınızı kontrol edin.", True, True)
     if status and status >= 500 or "overloaded" in low or "unavailable" in low:
-        return LLMError(f"{name} sunucusu şu an yanıt veremiyor (yoğunluk). Biraz sonra tekrar deneyin.", True)
+        return LLMError(f"{name} sunucusu şu an yanıt veremiyor (yoğunluk). Biraz sonra tekrar deneyin.", True, True)
     if status == 403 or "permission" in low or "location is not supported" in low:
-        return LLMError(f"{name}: bu anahtarın erişim izni yok ya da bölge desteklenmiyor.", True)
+        return LLMError(f"{name}: bu anahtarın erişim izni yok ya da bölge desteklenmiyor.", True, provider_wide=True)
     return LLMError(f"{name} hatası: {msg[:300]}", False)
 
 
@@ -50,12 +56,12 @@ class LLMClient:
     _unsupported: set[tuple[str, str, str]] = set()
     THINKING_HEADROOM = 8192   # Gemini 3 "düşünme" token'ları çıktı bütçesinden yer; JSON yarım kalmasın
 
-    def __init__(self, settings: Settings, provider: str | None = None):
+    def __init__(self, settings: Settings, provider: str | None = None, model: str | None = None):
         self.provider = provider or settings.provider
         if self.provider not in PROVIDERS:
             raise LLMError(f"Bilinmeyen sağlayıcı: {self.provider}")
-        self.model = settings.model_for(self.provider)
-        self.label = settings.label_for(self.provider)
+        self.model = model or settings.model_for(self.provider)
+        self.label = f"{PROVIDERS[self.provider]['short']} · {self.model}"
         self.last_finish = ""
         key = settings.key_for(self.provider)
         if not key:
@@ -64,14 +70,20 @@ class LLMClient:
         if self.provider == "anthropic":
             import anthropic
 
-            self._client = anthropic.Anthropic(api_key=key, timeout=180.0, max_retries=2)
+            self._client = anthropic.Anthropic(api_key=key, timeout=self._timeout(), max_retries=1)
         else:
             import openai
 
             base_url = PROVIDERS[self.provider].get("base_url")
-            self._client = openai.OpenAI(api_key=key, base_url=base_url, timeout=180.0, max_retries=2)
+            self._client = openai.OpenAI(api_key=key, base_url=base_url, timeout=self._timeout(), max_retries=1)
 
     # ------------------------------------------------------------ complete
+    @staticmethod
+    def _timeout():
+        import httpx
+        # bağlantı 15 sn; yanıt (veya akışta iki parça arası) en fazla 100 sn — sonra yedek modele geçilir
+        return httpx.Timeout(100.0, connect=15.0)
+
     def _openai_kwargs(self, max_tokens: int, temperature: float) -> dict:
         kw: dict = {"model": self.model, "temperature": temperature, "max_tokens": max_tokens}
         if self.provider == "gemini":
@@ -172,10 +184,13 @@ class LLMClient:
 
 
 class RoutedLLM:
-    """Birincil sağlayıcıyı kullanır; kota/bağlantı/anahtar hatasında sıradaki sağlayıcıya geçer.
+    """Birincil modeli kullanır. Geçici hatada (yoğunluk, hız sınırı, zaman aşımı) kısa bekleyip bir kez tekrar
+    dener; olmazsa aynı sağlayıcının hafif yedek modeline, o da olmazsa diğer sağlayıcılara geçer.
 
     `used` son başarılı yanıtı veren modelin etiketini, `fell_back` yedeğe geçilip geçilmediğini tutar.
     """
+
+    RETRY_WAIT = 4.0
 
     def __init__(self, settings: Settings, client_cls=LLMClient):
         self.settings = settings
@@ -189,29 +204,58 @@ class RoutedLLM:
                 p = PROVIDERS[settings.provider]["short"]
                 raise LLMError(f"{p} API anahtarı girilmemiş. Ayarlar'dan ekleyin ya da başka bir yapay zekâ seçin.")
         self.providers = providers
+        self.candidates: list[tuple[str, str]] = []
+        for p in providers:
+            primary = settings.model_for(p)
+            self.candidates.append((p, primary))
+            backup = PROVIDERS[p].get("backup_model")
+            if settings.fallback_enabled and backup and backup != primary:
+                self.candidates.append((p, backup))
         self.used: str = ""
         self.fell_back = False
         self.notes: list[str] = []
 
     @property
     def label(self) -> str:
-        return self.used or self.settings.label_for(self.providers[0])
+        if self.used:
+            return self.used
+        p, m = self.candidates[0]
+        return f"{PROVIDERS[p]['short']} · {m}"
+
+    def _make(self, p: str, m: str):
+        try:
+            return self.client_cls(self.settings, p, m)
+        except TypeError:          # eski imzalı test istemcileri
+            return self.client_cls(self.settings, p)
 
     def _run(self, fn):
         errors: list[str] = []
-        for i, p in enumerate(self.providers):
-            try:
-                client = self.client_cls(self.settings, p)
-                res = fn(client)
-                self.used = client.label
-                self.fell_back = i > 0
-                return res
-            except LLMError as e:
-                errors.append(str(e))
-                log.warning("Sağlayıcı %s başarısız: %s", p, e)
-                if not e.fallback_ok or i == len(self.providers) - 1:
+        n = len(self.candidates)
+        dead: set[str] = set()
+        for i, (p, m) in enumerate(self.candidates):
+            if p in dead:
+                continue
+            for attempt in (1, 2):
+                try:
+                    client = self._make(p, m)
+                    res = fn(client)
+                    self.used = client.label
+                    self.fell_back = i > 0
+                    return res
+                except LLMError as e:
+                    log.warning("%s/%s başarısız (deneme %d): %s", p, m, attempt, e)
+                    if e.transient and attempt == 1:
+                        time.sleep(self.RETRY_WAIT)
+                        continue
+                    errors.append(f"{PROVIDERS[p]['short']} · {m}: {e}")
+                    if not e.fallback_ok:
+                        raise LLMError(str(e)) from e
+                    if getattr(e, "provider_wide", False):
+                        dead.add(p)
                     break
-                self.notes.append(f"{e} → {PROVIDERS[self.providers[i + 1]]['short']} ile deneniyor.")
+            if i < n - 1:
+                np_, nm = self.candidates[i + 1]
+                self.notes.append(f"{p}/{m} yanıt vermedi → {PROVIDERS[np_]['short']} · {nm} deneniyor.")
         if len(errors) > 1:
             raise LLMError("Hiçbir yapay zekâ yanıt veremedi:\n• " + "\n• ".join(errors))
         raise LLMError(errors[0] if errors else "Bilinmeyen hata")
@@ -226,22 +270,35 @@ class RoutedLLM:
 
     def stream(self, system: str, messages: list[dict], max_tokens: int = 2048,
                temperature: float = 0.4) -> Iterator[str]:
-        """İlk parça gelmeden hata olursa sıradaki sağlayıcıya geçer; yayın başladıktan sonra geçmez."""
+        """İlk parça gelmeden hata olursa tekrar dener / sıradaki modele geçer; yayın başladıktan sonra geçmez."""
         errors: list[str] = []
-        for i, p in enumerate(self.providers):
-            started = False
-            try:
-                client = self.client_cls(self.settings, p)
-                self.used = client.label
-                self.fell_back = i > 0
-                for piece in client.stream(system, messages, max_tokens=max_tokens, temperature=temperature):
-                    started = True
-                    yield piece
-                return
-            except LLMError as e:
-                errors.append(str(e))
-                log.warning("Sağlayıcı %s (stream) başarısız: %s", p, e)
-                if started or not e.fallback_ok or i == len(self.providers) - 1:
+        n = len(self.candidates)
+        dead: set[str] = set()
+        for i, (p, m) in enumerate(self.candidates):
+            if p in dead:
+                continue
+            for attempt in (1, 2):
+                started = False
+                try:
+                    client = self._make(p, m)
+                    self.used = client.label
+                    self.fell_back = i > 0
+                    for piece in client.stream(system, messages, max_tokens=max_tokens, temperature=temperature):
+                        started = True
+                        yield piece
+                    return
+                except LLMError as e:
+                    log.warning("%s/%s (akış) başarısız (deneme %d): %s", p, m, attempt, e)
+                    if started:
+                        raise
+                    if e.transient and attempt == 1:
+                        time.sleep(self.RETRY_WAIT)
+                        continue
+                    errors.append(f"{PROVIDERS[p]['short']} · {m}: {e}")
+                    if not e.fallback_ok:
+                        raise LLMError(str(e)) from e
+                    if getattr(e, "provider_wide", False):
+                        dead.add(p)
                     break
         raise LLMError(errors[0] if len(errors) == 1 else "Hiçbir yapay zekâ yanıt veremedi:\n• " + "\n• ".join(errors))
 

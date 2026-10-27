@@ -134,7 +134,7 @@ def run(pdf: str | None, out: str) -> int:
         s = Settings()
         setattr(s, f"{prov}_api_key", key)
         s.provider = prov
-        s.fallback_enabled = False
+        s.fallback_enabled = True    # yalnızca bu sağlayıcının anahtarı var: birincil + hafif yedek modeli
         from .case import CaseEngine, CaseRequest
         from .llm import RoutedLLM
         from .quiz import GenRequest, QuizEngine
@@ -160,8 +160,8 @@ def run(pdf: str | None, out: str) -> int:
                               "Önce serum fizyolojik verilir, sonra insülin başlanır.")
             return {"score": g["score"], "missing": g.get("missing", [])[:3]}
 
-        _step(results, f"{prov}: quiz üretimi", quiz, required=False)
-        _step(results, f"{prov}: klasik cevap puanlama", grade, required=False)
+
+
         def chat(qe=qe):
             # Ayarlar > Test ile aynı mini görev
             from .llm import LLMClient
@@ -191,9 +191,12 @@ def run(pdf: str | None, out: str) -> int:
                 raise RuntimeError(f"Vaka sohbeti boş: {ans!r}")
             return {"chars": len(ans), "sample": ans[:160]}
 
-        _step(results, f"{prov}: vaka üretimi (paraklinik + test)", case, required=False)
-        _step(results, f"{prov}: sohbet (akış + takip sorusu)", chat, required=False)
-        _step(results, f"{prov}: vaka sohbeti", case_chat, required=False)
+        # Gerçek kullanım gibi adımlar arasında kısa ara (ücretsiz katmanın dakikalık sınırı)
+        for name, fn in ((f"{prov}: quiz üretimi", quiz), (f"{prov}: klasik cevap puanlama", grade),
+                         (f"{prov}: vaka üretimi (paraklinik + test)", case),
+                         (f"{prov}: sohbet (akış + takip sorusu)", chat), (f"{prov}: vaka sohbeti", case_chat)):
+            _step(results, name, fn, required=False)
+            time.sleep(10)
 
     log_tail = ""
     lp = Path(data_dir()) / "medquiz.log"

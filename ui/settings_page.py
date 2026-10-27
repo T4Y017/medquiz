@@ -153,8 +153,8 @@ class SettingsPage(QWidget):
             self.primary.addItem(v["label"], k)
         self.primary.setCurrentIndex(max(0, self.primary.findData(s.provider)))
         f.addRow("Birincil yapay zekâ", self.primary)
-        self.fallback = QCheckBox("Birincil yanıt veremezse (kota dolması, bağlantı, anahtar hatası) "
-                                  "otomatik olarak diğerine geç")
+        self.fallback = QCheckBox("Yanıt alınamazsa (yoğunluk, kota, bağlantı) otomatik yedeğe geç: önce aynı "
+                                  "sağlayıcının hafif modeli, sonra diğer sağlayıcı")
         self.fallback.setChecked(s.fallback_enabled)
         f.addRow("", self.fallback)
         cl.addLayout(f)

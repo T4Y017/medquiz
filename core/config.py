@@ -31,12 +31,14 @@ PROVIDERS = {
         "short": "Claude",
         "models": ["claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5"],
         "key_url": "https://console.anthropic.com/settings/keys",
+        "backup_model": "claude-haiku-5-5",
     },
     "gemini": {
         "label": "Gemini (Google)",
         "short": "Gemini",
         "models": ["gemini-3.8-flash", "gemini-4-argon", "gemini-3.5-flash-lite"],
         "key_url": "https://aistudio.google.com/apikey",
+        "backup_model": "gemini-3.5-flash-lite",
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
     },
     "openai": {
@@ -44,6 +46,7 @@ PROVIDERS = {
         "short": "OpenAI",
         "models": ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"],
         "key_url": "https://platform.openai.com/api-keys",
+        "backup_model": "gpt-4o-mini",
     },
 }
 
