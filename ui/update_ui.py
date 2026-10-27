@@ -32,9 +32,20 @@ class UpdateController(QObject):
         def done(info):
             self.busy = False
             if info is None:
-                self.status.emit(f"MedQuiz güncel (sürüm {__version__}).")
+                latest = updater.last_check.get("latest") or "?"
+                note = updater.last_check.get("note", "")
+                self.status.emit(f"MedQuiz güncel · kullanılan {updater.__version__} · GitHub'daki son sürüm {latest}")
                 if not silent:
-                    QMessageBox.information(self.parent_w, "Güncel", f"En güncel sürümü kullanıyorsunuz ({__version__}).")
+                    box = QMessageBox(self.parent_w)
+                    box.setWindowTitle("Güncel")
+                    box.setText(f"En güncel sürümü kullanıyorsunuz.\n\nKullanılan: {updater.__version__}\n"
+                                f"GitHub'daki son sürüm: {latest}" + (f"\n\n{note}" if note else ""))
+                    page = box.addButton("Sürümler sayfasını aç", QMessageBox.ActionRole)
+                    box.addButton("Tamam", QMessageBox.AcceptRole)
+                    box.exec()
+                    if box.clickedButton() is page:
+                        from core.version import UPDATE_REPO
+                        QDesktopServices.openUrl(QUrl(f"https://github.com/{UPDATE_REPO}/releases"))
                 return
             self.status.emit(f"Yeni sürüm mevcut: {info.version}")
             skip = self.ctx.settings.extra.get("skip_version")

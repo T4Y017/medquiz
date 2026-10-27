@@ -15,13 +15,18 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .version import INSTALLER_ASSET, UPDATE_REPO, __version__
+from .version import INSTALLER_ASSET, UPDATE_REPO
+from .version import __version__ as _BUILT_VERSION
 
 log = logging.getLogger(__name__)
+# Test için sürüm taklidi (CI'da eski bir sürümmüş gibi güncelleme akışını sınamak için)
+__version__ = os.environ.get("MEDQUIZ_VERSION_OVERRIDE") or _BUILT_VERSION
+last_check: dict = {}          # son kontrolün ayrıntısı (arayüzde gösterilir)
 API = "https://api.github.com/repos/{repo}/releases/latest"
 UA = {"User-Agent": f"MedQuiz/{__version__}", "Accept": "application/vnd.github+json"}
 
@@ -46,8 +51,8 @@ def parse_version(v: str) -> tuple[int, ...]:
     return tuple(int(n) for n in nums[:4]) or (0,)
 
 
-def is_newer(remote: str, local: str = __version__) -> bool:
-    return parse_version(remote) > parse_version(local)
+def is_newer(remote: str, local: str | None = None) -> bool:
+    return parse_version(remote) > parse_version(local or __version__)
 
 
 def can_self_install() -> bool:
@@ -70,18 +75,26 @@ def check(repo: str = UPDATE_REPO, timeout: float = 10.0, get=None) -> UpdateInf
         r = get(API.format(repo=repo), headers=UA, timeout=timeout)
     except Exception as e:  # noqa: BLE001
         raise UpdateError(f"Güncelleme sunucusuna ulaşılamadı: {e}") from e
+    last_check.clear()
+    last_check.update(current=__version__, status=r.status_code, latest="", time=time.time())
+    log.info("Güncelleme kontrolü: HTTP %s, kullanılan %s", r.status_code, __version__)
     if r.status_code == 404:
-        return None                                    # henüz yayın yok ya da depo gizli
+        raise UpdateError("Sürüm bilgisi bulunamadı (GitHub 404). Depo gizli yapılmış olabilir; otomatik güncelleme "
+                          "için deponun herkese açık olması gerekir.")
     if r.status_code == 403:
         raise UpdateError("GitHub geçici olarak istek sınırına ulaştı; daha sonra tekrar denenecek.")
     if r.status_code != 200:
         raise UpdateError(f"Güncelleme bilgisi alınamadı (HTTP {r.status_code}).")
     data = r.json()
     tag = str(data.get("tag_name", ""))
+    last_check["latest"] = tag.lstrip("vV")
+    log.info("GitHub'daki son sürüm: %s", tag)
     if not tag or not is_newer(tag):
         return None
     asset = next((a for a in data.get("assets", []) if a.get("name") == INSTALLER_ASSET), None)
     if not asset:
+        log.warning("Son sürümde kurulum dosyası yok (%s)", tag)
+        last_check["note"] = "Son sürümün kurulum dosyası henüz yüklenmemiş."
         return None
     body = data.get("body") or ""
     m = re.search(r"sha256:\s*([0-9a-fA-F]{64})", body)

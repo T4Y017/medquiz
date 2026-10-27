@@ -130,9 +130,23 @@ def run(pdf: str | None, out: str) -> int:
 
     def update_check():
         from . import updater
-        from .version import __version__
-        info = updater.check()
-        return {"current": __version__, "newer_available": info.version if info else None,
+        real = updater.__version__
+        info_now = updater.check()
+        # Eski bir sürümmüş gibi davranıp tam akışı (bul → indir → boyut + SHA-256 doğrula) sına; kurma
+        updater.__version__ = "1.0.0"
+        try:
+            info = updater.check()
+            if info is None:
+                raise RuntimeError(f"Eski sürüm taklidinde güncelleme bulunamadı: {updater.last_check}")
+            t0 = time.time()
+            path = updater.download(info)
+            size = path.stat().st_size
+            path.unlink(missing_ok=True)
+        finally:
+            updater.__version__ = real
+        return {"current": real, "newer_now": info_now.version if info_now else None,
+                "as_1.0.0_found": info.version, "downloaded_mb": round(size / 1e6, 1),
+                "sha256_verified": bool(info.sha256), "download_secs": round(time.time() - t0, 1),
                 "can_self_install": updater.can_self_install()}
 
     _step(results, "Güncelleme kontrolü (GitHub Releases)", update_check, required=False)
