@@ -28,6 +28,9 @@ sistemi çalışır.
 | 💬 **Sohbet** | Kütüphanedeki kaynaklara dayanan, [K1] [K2] atıflı soru-cevap |
 | 📚 **Genişletilebilir kütüphane** | Dosya / klasör / web linki ekle, sürükle-bırak, konu etiketi, sil |
 | 🤖 **Çoklu yapay zekâ** | Claude, Gemini ve OpenAI anahtarları aynı anda kayıtlı; sol menüden tek tıkla geçiş; biri kota/bağlantı hatası verirse otomatik olarak diğeri devreye girer; her cevapta hangi modelin yanıtladığı görünür |
+| 🌐 **Çeviri** | Quiz, vaka ve sohbette “🌐 Çevir” ya da seçili metinde sağ tık → çevir; tıbbi terimler parantez içinde aslıyla; çeviriler önbellekte tutulur |
+| 🇬🇧 **İngilizce sorular** | Quiz ve vaka ekranında Dil: English (USMLE tarzı); klasik cevabı Türkçe ya da İngilizce yazabilirsin |
+| 📘 **Kelime havuzu** | Bilmediğin kelimeyi seç → sağ tık → “Kelime havuzuna ekle”: anlam, okunuş, örnek cümle otomatik; Kelimeler sayfasında aralıklı tekrarla bilgi kartı çalışması, CSV/Anki dışa aktarma |
 | 👨‍👩‍👧 **Aile profilleri** | Her kişi kendi ismini seçer, istatistikler ayrı tutulur |
 | 📊 **İstatistik** | Genel başarı, türe ve konuya göre (en zayıf konular üstte) |
 
@@ -147,6 +150,7 @@ core/retrieval.py      BM25 + embedding hibrit arama, quiz bağlamı seçimi
 core/updater.py        uygulama içi güncelleme (GitHub Releases, SHA-256 doğrulama, sessiz kurulum)
 core/version.py        sürüm numarası (CI tarafından yazılır)
 core/llm.py            Claude / Gemini / OpenAI istemcisi, otomatik yedekleme (RoutedLLM), JSON ayrıştırma
+core/translate.py      çeviri (önbellekli) ve kelime tanımı
 core/quiz.py           soru üretimi, puanlama, sohbet istemleri (prompt'lar burada)
 core/case.py           aşamalı vaka üretimi, aşama puanlama, Sokratik vaka sohbeti
 ui/*.py                PySide6 arayüz sayfaları

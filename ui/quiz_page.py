@@ -16,6 +16,7 @@ from core.quiz import BATCH, DIFFICULTIES, QTYPES, GenRequest
 
 from . import style
 from .context import AppContext
+from .translate_ui import attach_menu, open_translation
 
 LETTERS = "ABCDEFGH"
 
@@ -147,6 +148,15 @@ class QuizPage(QWidget):
         row2 = QHBoxLayout()
         row2.addWidget(self.docs_btn)
         row2.addWidget(self.cont_cb)
+        ll = QLabel("Dil")
+        ll.setObjectName("muted")
+        self.lang_cb = QComboBox()
+        self.lang_cb.addItem("Türkçe", "tr")
+        self.lang_cb.addItem("English", "en")
+        self.lang_cb.setToolTip("Soruların dili. İngilizce sorularda “🌐 Çevir” ile Türkçesini görebilirsin.")
+        row2.addSpacing(10)
+        row2.addWidget(ll)
+        row2.addWidget(self.lang_cb)
         row2.addStretch()
         row2.addWidget(self.review_btn)
         row2.addWidget(self.start_btn)
@@ -198,6 +208,11 @@ class QuizPage(QWidget):
         meta.addWidget(self.badge_diff)
         meta.addWidget(self.badge_topic)
         meta.addStretch()
+        self.tr_btn = QPushButton("🌐 Çevir")
+        self.tr_btn.setToolTip("Soruyu, şıkları ve (cevapladıysan) açıklamayı Türkçeye çevirir.\n"
+                               "Bilmediğin kelimeyi seçip sağ tıklayarak kelime havuzuna ekleyebilirsin.")
+        self.tr_btn.clicked.connect(self.translate_current)
+        meta.addWidget(self.tr_btn)
         cl.addLayout(meta)
 
         self.q_lbl = QLabel()
@@ -259,6 +274,9 @@ class QuizPage(QWidget):
         self.src_view.setMinimumHeight(180)
         self.src_view.hide()
         fbl.addWidget(self.src_view)
+        attach_menu(self.q_lbl, self.ctx, "quiz", "Soru — çeviri", context_getter=self._card_text)
+        attach_menu(self.fb_lbl, self.ctx, "quiz", "Açıklama — çeviri", context_getter=self._card_text)
+        attach_menu(self.src_view, self.ctx, "kaynak", "Kaynak metin — çeviri")
         cl.addWidget(self.fb)
 
         self.empty_lbl = QLabel()
@@ -351,12 +369,37 @@ class QuizPage(QWidget):
         return self.questions[self.idx] if 0 <= self.idx < len(self.questions) else None
 
     # ====================================================== generation
+    def _card_text(self) -> str:
+        q = self.current()
+        if not q:
+            return ""
+        parts = [q["question"]]
+        if q["type"] == "mcq":
+            parts += [f"{LETTERS[i]}) {o}" for i, o in enumerate(q["options"])]
+        res = self.results.get(self.idx)
+        if res is not None:
+            if q["type"] == "mcq":
+                parts.append(f"\nCorrect answer: {LETTERS[q['answer_index']]}")
+                if q.get("explanation"):
+                    parts.append(q["explanation"])
+            else:
+                if q.get("key_points"):
+                    parts.append("\nKey points:\n" + "\n".join(f"- {k}" for k in q["key_points"]))
+                if q.get("model_answer"):
+                    parts.append("\nModel answer:\n" + q["model_answer"])
+        return "\n".join(parts)
+
+    def translate_current(self):
+        text = self._card_text()
+        if text:
+            open_translation(self.ctx, self, text, "quiz", "Soru — çeviri")
+
     def _build_request(self) -> GenRequest:
         return GenRequest(
             qtype=self.type_cb.currentData(), count=self.count_sp.value(), difficulty=self.diff_cb.currentText(),
             topic=self.topic_le.text().strip(),
             doc_ids=sorted(self.selected_docs) if self.selected_docs is not None else None,
-            profile=self.ctx.profile,
+            profile=self.ctx.profile, language=self.lang_cb.currentData(),
         )
 
     def start(self):
@@ -551,7 +594,7 @@ class QuizPage(QWidget):
             self.counter_lbl.setText(f"Soru {self.idx + 1} / {total}{extra}")
 
     def _show_widgets(self, q: bool):
-        for w in (self.counter_lbl, self.badge_type, self.badge_topic, self.badge_diff, self.q_lbl):
+        for w in (self.counter_lbl, self.badge_type, self.badge_topic, self.badge_diff, self.q_lbl, self.tr_btn):
             w.setVisible(q)
         self.empty_lbl.setVisible(not q)
 

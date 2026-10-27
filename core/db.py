@@ -43,6 +43,28 @@ CREATE TABLE IF NOT EXISTS questions (
     answered_at REAL,
     profile TEXT DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS vocab (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    term TEXT NOT NULL,
+    meaning TEXT DEFAULT '',
+    definition TEXT DEFAULT '',
+    example TEXT DEFAULT '',
+    pos TEXT DEFAULT '',
+    ipa TEXT DEFAULT '',
+    source TEXT DEFAULT '',
+    profile TEXT DEFAULT '',
+    added_at REAL NOT NULL,
+    box INTEGER DEFAULT 0,
+    due_at REAL NOT NULL,
+    reviews INTEGER DEFAULT 0,
+    lapses INTEGER DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_vocab_term ON vocab(lower(term), profile);
+CREATE TABLE IF NOT EXISTS translations (
+    key TEXT PRIMARY KEY,
+    text TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS chats (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at REAL NOT NULL,
@@ -264,6 +286,100 @@ class Database:
                 "SELECT DISTINCT profile FROM questions WHERE profile != '' ORDER BY profile"
             ).fetchall()
             return [r[0] for r in rows]
+
+    # --------------------------------------------------------- translations
+    def get_translation(self, key: str) -> str | None:
+        with self._lock:
+            r = self.conn.execute("SELECT text FROM translations WHERE key = ?", (key,)).fetchone()
+        return r[0] if r else None
+
+    def put_translation(self, key: str, text: str) -> None:
+        with self._lock:
+            self.conn.execute("INSERT OR REPLACE INTO translations(key, text, created_at) VALUES (?,?,?)",
+                              (key, text, time.time()))
+            self.conn.commit()
+
+    # ---------------------------------------------------------------- vocab
+    # Leitner kutuları: kutu n'de doğru bilinen kelime INTERVALS[n] gün sonra tekrar sorulur
+    VOCAB_INTERVALS = [1, 3, 7, 16, 35, 90]
+
+    def find_vocab(self, term: str, profile: str = "") -> dict | None:
+        with self._lock:
+            r = self.conn.execute("SELECT * FROM vocab WHERE lower(term) = lower(?) AND profile = ?",
+                                  (term.strip(), profile)).fetchone()
+        return dict(r) if r else None
+
+    def add_vocab(self, term: str, meaning: str = "", definition: str = "", example: str = "", pos: str = "",
+                  ipa: str = "", source: str = "", profile: str = "") -> int | None:
+        """Yeni kelime ekler; zaten varsa None döndürür."""
+        now = time.time()
+        with self._lock:
+            try:
+                cur = self.conn.execute(
+                    "INSERT INTO vocab(term, meaning, definition, example, pos, ipa, source, profile, added_at, due_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (term.strip(), meaning, definition, example, pos, ipa, source, profile, now, now))
+            except sqlite3.IntegrityError:
+                return None
+            self.conn.commit()
+            return cur.lastrowid
+
+    def update_vocab(self, vid: int, **fields) -> None:
+        allowed = {k: v for k, v in fields.items() if k in ("term", "meaning", "definition", "example", "pos", "ipa")}
+        if not allowed:
+            return
+        with self._lock:
+            self.conn.execute(f"UPDATE vocab SET {', '.join(f'{k} = ?' for k in allowed)} WHERE id = ?",
+                              (*allowed.values(), vid))
+            self.conn.commit()
+
+    def delete_vocab(self, vid: int) -> None:
+        with self._lock:
+            self.conn.execute("DELETE FROM vocab WHERE id = ?", (vid,))
+            self.conn.commit()
+
+    def list_vocab(self, profile: str | None = None, search: str = "") -> list[dict]:
+        sql = "SELECT * FROM vocab WHERE 1=1"
+        params: list = []
+        if profile is not None:
+            sql += " AND profile = ?"
+            params.append(profile)
+        if search.strip():
+            sql += " AND (term LIKE ? OR meaning LIKE ?)"
+            params += [f"%{search.strip()}%"] * 2
+        sql += " ORDER BY added_at DESC"
+        with self._lock:
+            return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
+
+    def due_vocab(self, profile: str | None = None, limit: int = 50) -> list[dict]:
+        sql = "SELECT * FROM vocab WHERE due_at <= ?"
+        params: list = [time.time()]
+        if profile is not None:
+            sql += " AND profile = ?"
+            params.append(profile)
+        sql += " ORDER BY box ASC, due_at ASC LIMIT ?"
+        params.append(limit)
+        with self._lock:
+            return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
+
+    def review_vocab(self, vid: int, knew: bool) -> dict:
+        with self._lock:
+            r = self.conn.execute("SELECT box FROM vocab WHERE id = ?", (vid,)).fetchone()
+            if not r:
+                return {}
+            box = r[0]
+            now = time.time()
+            if knew:
+                due = now + self.VOCAB_INTERVALS[min(box, len(self.VOCAB_INTERVALS) - 1)] * 86400
+                box = min(box + 1, len(self.VOCAB_INTERVALS))
+                self.conn.execute("UPDATE vocab SET box = ?, due_at = ?, reviews = reviews + 1 WHERE id = ?",
+                                  (box, due, vid))
+            else:
+                box, due = 0, now + 10 * 60          # 10 dk sonra yeniden
+                self.conn.execute("UPDATE vocab SET box = 0, due_at = ?, reviews = reviews + 1, "
+                                  "lapses = lapses + 1 WHERE id = ?", (due, vid))
+            self.conn.commit()
+            return {"box": box, "due_at": due}
 
     # ---------------------------------------------------------------- chats
     def save_chat(self, chat_id: int | None, title: str, messages: list[dict], profile: str = "") -> int:

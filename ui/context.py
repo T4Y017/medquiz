@@ -9,6 +9,7 @@ from core.db import Database
 from core.llm import RoutedLLM
 from core.quiz import QuizEngine
 from core.retrieval import Embedder, Retriever
+from core.translate import Translator
 
 from .workers import Runner
 
@@ -18,6 +19,7 @@ class AppContext(QObject):
     settings_changed = Signal()
     profile_changed = Signal(str)
     index_status = Signal(str)
+    vocab_changed = Signal()
 
     def __init__(self):
         super().__init__()
@@ -28,6 +30,7 @@ class AppContext(QObject):
         self.retriever = Retriever(self.db, self.embedder)
         self.engine = QuizEngine(self.db, self.retriever, lambda: RoutedLLM(self.settings))
         self.case_engine = CaseEngine(self.db, self.retriever, self.engine, lambda: RoutedLLM(self.settings))
+        self.translator = Translator(self.db, lambda: RoutedLLM(self.settings))
         self.profile = self.settings.user_name or ""
 
     def _make_embedder(self) -> Embedder | None:

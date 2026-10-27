@@ -31,11 +31,13 @@ from ui.library_page import LibraryPage  # noqa: E402
 from ui.quiz_page import QuizPage  # noqa: E402
 from ui.settings_page import SettingsPage  # noqa: E402
 from ui.stats_page import StatsPage  # noqa: E402
+from ui.vocab_page import VocabPage  # noqa: E402
 
 from core.version import __version__ as VERSION  # noqa: E402
 
 
 class MainWindow(QMainWindow):
+    SETTINGS_ROW = 6
     def __init__(self, ctx: AppContext):
         super().__init__()
         self.ctx = ctx
@@ -101,9 +103,11 @@ class MainWindow(QMainWindow):
         self.chat = ChatPage(ctx)
         self.library = LibraryPage(ctx)
         self.stats = StatsPage(ctx)
+        self.vocab = VocabPage(ctx)
         self.settings = SettingsPage(ctx)
         for icon, name, page in (("📝", "Quiz", self.quiz), ("🩺", "Vaka", self.case), ("💬", "Sohbet", self.chat),
-                                 ("📚", "Kütüphane", self.library), ("📊", "İstatistik", self.stats),
+                                 ("📚", "Kütüphane", self.library), ("📘", "Kelimeler", self.vocab),
+                                 ("📊", "İstatistik", self.stats),
                                  ("⚙", "Ayarlar", self.settings)):
             self.nav.addItem(QListWidgetItem(f"{icon}   {name}"))
             self.stack.addWidget(page)
@@ -120,7 +124,7 @@ class MainWindow(QMainWindow):
 
         # İlk açılış: anahtar yoksa ayarlar, kütüphane boşsa kütüphane
         if not ctx.settings.has_any_key:
-            self.nav.setCurrentRow(5)
+            self.nav.setCurrentRow(self.SETTINGS_ROW)
         elif not ctx.db.list_documents():
             self.nav.setCurrentRow(3)
         else:
@@ -150,7 +154,7 @@ class MainWindow(QMainWindow):
     def _ai_changed(self, _i: int):
         p = self.ai_cb.currentData()
         if p is None:
-            self.nav.setCurrentRow(5)
+            self.nav.setCurrentRow(self.SETTINGS_ROW)
             return
         if p != self.ctx.settings.provider:
             self.ctx.settings.provider = p

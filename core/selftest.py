@@ -199,8 +199,24 @@ def run(pdf: str | None, out: str) -> int:
             r = test_provider(s, prov)
             return {"label": r["label"], "secs": round(r["secs"], 1), "notes": r["notes"], "q": r["question"][:100]}
 
+        def english_and_translate(qe=qe):
+            from .translate import Translator
+            qs = qe.generate(GenRequest(qtype="open", count=1, difficulty="Orta", topic="diyabetik ketoasidoz",
+                                        language="en"))
+            q = qs[0]["question"]
+            ascii_ratio = sum(c.isascii() for c in q) / max(1, len(q))
+            tr = Translator(db, lambda s=s: RoutedLLM(s))
+            t = tr.translate(q)
+            turkish = any(ch in t for ch in "çğışöüÇĞİŞÖÜ")
+            if not turkish:
+                raise RuntimeError(f"Çeviri Türkçe görünmüyor: {t[:120]!r}")
+            d = tr.define("diaphoresis", "He presented with chest pain, diaphoresis and dyspnea.")
+            return {"en_question": q[:120], "english_like": round(ascii_ratio, 2), "translation": t[:120],
+                    "term": d["term"], "meaning": d["meaning"], "ipa": d["ipa"], "cached": tr.cached(q) is not None}
+
         # Gerçek kullanım gibi adımlar arasında kısa ara (ücretsiz katmanın dakikalık sınırı)
-        for name, fn in ((f"{prov}: Ayarlar > Test düğmesi", settings_test), (f"{prov}: quiz üretimi", quiz), (f"{prov}: klasik cevap puanlama", grade),
+        for name, fn in ((f"{prov}: Ayarlar > Test düğmesi", settings_test), (f"{prov}: quiz üretimi", quiz),
+                         (f"{prov}: İngilizce soru + çeviri + kelime tanımı", english_and_translate), (f"{prov}: klasik cevap puanlama", grade),
                          (f"{prov}: vaka üretimi (paraklinik + test)", case),
                          (f"{prov}: sohbet (akış + takip sorusu)", chat), (f"{prov}: vaka sohbeti", case_chat)):
             _step(results, name, fn, required=False)

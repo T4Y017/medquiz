@@ -66,9 +66,18 @@ JSON_SPEC = """Şu JSON yapısını döndür:
 }
 Şıklarda "A)", "B)" gibi harf önekleri kullanma."""
 
+LANG_RULE = {
+    "tr": "",
+    "en": ("DİL: Soru kökünü, şıkları, açıklamayı, örnek cevabı ve anahtar noktaları İNGİLİZCE yaz "
+           "(USMLE tarzı, doğal tıbbi İngilizce). Kaynak metin Türkçe olsa bile İngilizce yaz. "
+           "'topic' alanını Türkçe bırak."),
+}
+
 SYSTEM_GRADE = """Sen adil ve titiz bir tıp eğitimcisisin. Öğrencinin klasik (uzun cevaplı) sınav cevabını,
 verilen anahtar noktalar, örnek cevap ve kaynak metne göre değerlendir.
 - Anlamca doğru olan farklı ifadeleri kabul et; yazım hatalarını puandan düşme.
+- Soru İngilizce olabilir; öğrenci Türkçe ya da İngilizce cevap verebilir — dil farkı puanı etkilemez.
+  Geri bildirimi (feedback, covered, missing, errors) her zaman TÜRKÇE yaz.
 - Tıbben yanlış ya da tehlikeli ifadeleri açıkça belirt.
 - 0-100 arası puan ver: anahtar noktaların kapsanma oranı esas, yanlış bilgi puan düşürür.
 YALNIZCA şu JSON'u döndür:
@@ -108,6 +117,7 @@ class GenRequest:
     topic: str = ""
     doc_ids: list[int] | None = None
     profile: str = ""
+    language: str = "tr"       # "tr" | "en"
 
 
 class QuizEngine:
@@ -182,7 +192,8 @@ class QuizEngine:
             f"KAYNAK METİNLER:\n\n{context}\n\n=====\n\n"
             f"{topic_txt}"
             f"Zorluk: {req.difficulty} — {DIFFICULTIES.get(req.difficulty, '')}\n"
-            f"{self._type_instruction(req.qtype, n)}\n\n"
+            f"{self._type_instruction(req.qtype, n)}\n"
+            f"{LANG_RULE.get(req.language, '')}\n\n"
             f"Daha önce sorulan sorular (bunları tekrarlama):\n{avoid_txt}\n\n{JSON_SPEC}"
         )
         data = llm.complete_json(SYSTEM_QUIZ, user, max_tokens=8000, temperature=0.8)

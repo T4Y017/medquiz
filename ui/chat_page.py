@@ -14,6 +14,7 @@ from core.config import PROVIDERS
 from core.quiz import source_label
 
 from .context import AppContext
+from .translate_ui import attach_menu, open_translation
 
 
 class _Input(QPlainTextEdit):
@@ -103,6 +104,11 @@ class ChatPage(QWidget):
         self.ai_cb.setToolTip("Bu sohbette hangi yapay zekânın yanıt vereceği (tüm uygulamada geçerlidir)")
         self.ai_cb.activated.connect(self._ai_changed)
         head.addWidget(self.ai_cb)
+        tr_btn = QPushButton("🌐 Son yanıtı çevir")
+        tr_btn.setToolTip("Son yanıtı Türkçe/İngilizce çevirir. Metinde kelime seçip sağ tıklayarak "
+                          "kelime havuzuna ekleyebilirsin.")
+        tr_btn.clicked.connect(self.translate_last)
+        head.addWidget(tr_btn)
         self.quiz_btn = QPushButton("Bu konudan quiz")
         self.quiz_btn.setToolTip("Son sorduğun konuyu Quiz sekmesine aktarır.")
         head.addWidget(self.quiz_btn)
@@ -110,6 +116,7 @@ class ChatPage(QWidget):
 
         self.view = QTextBrowser()
         self.view.setOpenExternalLinks(True)
+        attach_menu(self.view, self.ctx, "sohbet", "Sohbet — çeviri")
         root.addWidget(self.view, 1)
 
         row = QHBoxLayout()
@@ -228,6 +235,11 @@ class ChatPage(QWidget):
         self.refresh_list()
 
     # ------------------------------------------------------------------ gönder
+    def translate_last(self):
+        last = next((m["content"] for m in reversed(self.history) if m["role"] == "assistant" and m["content"]), "")
+        if last:
+            open_translation(self.ctx, self, last, "sohbet", "Sohbet — çeviri")
+
     def last_user_question(self) -> str:
         for m in reversed(self.history):
             if m["role"] == "user":

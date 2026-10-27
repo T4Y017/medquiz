@@ -19,6 +19,7 @@ from core.case import LEVELS, CaseEngine, CaseRequest
 from . import style
 from .context import AppContext
 from .quiz_page import DocPicker
+from .translate_ui import attach_menu, open_translation
 
 LETTERS = "ABCDEFGHIJ"
 
@@ -348,6 +349,11 @@ class CasePage(QWidget):
         row.addWidget(lab)
         row.addWidget(self.level_cb)
         row.addWidget(self.docs_btn)
+        self.lang_cb = QComboBox()
+        self.lang_cb.addItem("Türkçe", "tr")
+        self.lang_cb.addItem("English", "en")
+        self.lang_cb.setToolTip("Vakanın dili. İngilizce vakada “🌐 Çevir” ile Türkçesini görebilirsin.")
+        row.addWidget(self.lang_cb)
         row.addWidget(self.para_cb)
         row.addWidget(tl)
         row.addWidget(self.test_sp)
@@ -467,6 +473,7 @@ class CasePage(QWidget):
             topic="" if own else self.topic_le.text().strip(), own_case=own, level=self.level_cb.currentText(),
             doc_ids=sorted(self.selected_docs) if self.selected_docs is not None else None, profile=self.ctx.profile,
             paraclinic=self.para_cb.isChecked(), test_count=self.test_sp.value(),
+            language=self.lang_cb.currentData(),
         )
         engine: CaseEngine = self.ctx.case_engine
         self.create_btn.setEnabled(False)
@@ -509,6 +516,11 @@ class CasePage(QWidget):
         head.addWidget(self.stage_badge)
         self.pdf_btn = QPushButton("PDF olarak kaydet")
         self.pdf_btn.clicked.connect(self.export_pdf)
+        self.tr_btn = QPushButton("🌐 Çevir")
+        self.tr_btn.setToolTip("Şu anki aşamayı (ve geri bildirimini) Türkçeye çevirir.\n"
+                               "Bilmediğin kelimeyi seçip sağ tıklayarak kelime havuzuna ekleyebilirsin.")
+        self.tr_btn.clicked.connect(self.translate_current)
+        head.addWidget(self.tr_btn)
         head.addWidget(self.pdf_btn)
         lay.addLayout(head)
         self.progress = QProgressBar()
@@ -524,6 +536,7 @@ class CasePage(QWidget):
         self.view = QTextBrowser()
         self.view.setOpenExternalLinks(False)
         self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        attach_menu(self.view, self.ctx, "vaka", "Vaka — çeviri")
         ll.addWidget(self.view, 1)
 
         self.task_card = QFrame()
@@ -533,6 +546,8 @@ class CasePage(QWidget):
         tl.setSpacing(6)
         self.task_lbl = QLabel("")
         self.task_lbl.setWordWrap(True)
+        self.task_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        attach_menu(self.task_lbl, self.ctx, "vaka", "Görev — çeviri", context_getter=lambda: self._current_text())
         self.task_lbl.setStyleSheet("font-weight:600;")
         tl.addWidget(self.task_lbl)
         self.choices_box = QWidget()
@@ -577,6 +592,7 @@ class CasePage(QWidget):
         hint.setWordWrap(True)
         rl.addWidget(hint)
         self.chat_view = QTextBrowser()
+        attach_menu(self.chat_view, self.ctx, "vaka sohbeti", "Vaka sohbeti — çeviri")
         rl.addWidget(self.chat_view, 1)
         self.chat_in = QLineEdit()
         self.chat_in.setPlaceholderText("Sorunu yaz, Enter'a bas…")
@@ -920,6 +936,51 @@ class CasePage(QWidget):
         sb.setValue(sb.maximum())
 
     # ----------------------------------------------------------------- pdf
+    def _current_text(self) -> str:
+        """Ekranda üzerinde çalışılan kısmın düz metni: aktif aşama (+ geri bildirim) ya da aktif test sorusu."""
+        if not self.case:
+            return ""
+        st = self.state
+        phase = _phase(st)
+        out: list[str] = []
+        if phase == "test":
+            q = self.case["final_test"][st["test_idx"]]
+            out.append(q["question"])
+            out += [f"{LETTERS[j]}) {o}" for j, o in enumerate(q["options"])]
+            if str(st["test_idx"]) in st["test_answers"] and q.get("explanation"):
+                out.append(f"\nCorrect answer: {LETTERS[q['answer_index']]}\n{q['explanation']}")
+            return "\n".join(out)
+        if phase == "done":
+            c = self.case
+            out.append(f"Final diagnosis: {c.get('final_diagnosis', '')}")
+            if c.get("discussion"):
+                out.append(c["discussion"])
+            if c.get("teaching_points"):
+                out.append("\n".join(f"- {x}" for x in c["teaching_points"]))
+            return "\n\n".join(out)
+        i = st["stage"]
+        sg = self.case["stages"][i]
+        t = sg["task"]
+        out += [sg["title"], sg["narrative"]]
+        for f in sg.get("findings") or []:
+            out.append(f"{f['test']}: {f['result']} {f.get('unit', '')} (ref {f.get('ref', '')})".strip())
+        out.append(t["prompt"])
+        if t["type"] in ("mcq", "multi"):
+            out += [f"{LETTERS[j]}) {o}" for j, o in enumerate(t["options"])]
+        if str(i) in st["answers"]:
+            if t.get("model_answer"):
+                out.append("\nModel answer: " + t["model_answer"])
+            if t.get("expected_points"):
+                out.append("\n".join(f"- {x}" for x in t["expected_points"]))
+            if sg.get("teaching"):
+                out.append("\nTeaching note: " + sg["teaching"])
+        return "\n".join(x for x in out if x)
+
+    def translate_current(self):
+        text = self._current_text()
+        if text:
+            open_translation(self.ctx, self, text, "vaka", "Vaka — çeviri")
+
     def export_pdf(self):
         if not self.case:
             return

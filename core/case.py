@@ -138,6 +138,7 @@ class CaseRequest:
     profile: str = ""
     paraclinic: bool = True
     test_count: int = 5
+    language: str = "tr"       # "tr" | "en"
 
 
 class CaseEngine:
@@ -182,6 +183,9 @@ class CaseEngine:
             extra.append(TEST_RULES.format(n=n_test, para=TEST_PARA if req.paraclinic else ""))
         else:
             extra.append('"final_test" alanını boş liste [] olarak bırak.')
+        if req.language == "en":
+            extra.append("DİL: Vakanın tüm metnini (başlık, anlatım, bulgular, görevler, şıklar, öğretim notları, "
+                         "tartışma, test soruları) İNGİLİZCE yaz (USMLE Step 2 CK tarzı). Kaynak Türkçe olsa bile.")
         user = (f"KAYNAK METİNLER:\n\n{context}\n\n=====\n\n{focus}"
                 f"Hedef seviye: {req.level} — {LEVELS.get(req.level, '')}\n\n{CASE_SPEC}\n\n" + "\n\n".join(extra))
         llm = self.llm_factory()
