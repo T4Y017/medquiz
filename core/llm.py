@@ -350,3 +350,42 @@ def parse_json(text: str) -> dict:
             raise ValueError(str(e)) from e
         return data if isinstance(data, dict) else {"items": data}
     return data if isinstance(data, dict) else {"items": data}
+
+
+def test_provider(settings: Settings, provider: str) -> dict:
+    """Ayarlar > Test: sağlayıcıyla gerçek bir mini soru üretimi dener.
+
+    Birincil model geçici olarak meşgulse (hız sınırı/yoğunluk) bu, anahtarın GEÇERLİ olduğunu gösterir;
+    o durumda hafif yedek modeli de dener ve sonucu açıklayan bir not döndürür.
+    """
+    t0 = time.time()
+    models = [settings.model_for(provider)]
+    backup = PROVIDERS[provider].get("backup_model")
+    if backup and backup not in models:
+        models.append(backup)
+    notes: list[str] = []
+    last: LLMError | None = None
+    for m in models:
+        try:
+            c = LLMClient(settings, provider, m)
+            data = c.complete_json(
+                "Sen bir tıp eğitimcisisin. Yalnızca geçerli JSON döndür.",
+                'Hipoglisemi hakkında 4 şıklı tek bir kısa soru yaz. Biçim: '
+                '{"question": "...", "options": ["...","...","...","..."], "answer_index": 0}',
+                max_tokens=600, temperature=0.3)
+            q = data.get("question")
+            if not q and isinstance(data.get("items"), list) and data["items"]:
+                q = data["items"][0].get("question") if isinstance(data["items"][0], dict) else ""
+            q = str(q or "").strip()
+            if not q:
+                raise LLMError(f"Yanıt alındı ama beklenen biçimde değil: {str(data)[:200]}", True)
+            return {"label": c.label, "secs": time.time() - t0, "question": q, "notes": notes}
+        except LLMError as e:
+            last = e
+            if getattr(e, "provider_wide", False) or not e.fallback_ok:
+                raise
+            if e.transient:
+                notes.append(f"{m} şu an meşgul ({e}); anahtar geçerli")
+            else:
+                notes.append(f"{m}: {e}")
+    raise last or LLMError("Test başarısız")

@@ -163,12 +163,6 @@ def run(pdf: str | None, out: str) -> int:
 
 
         def chat(qe=qe):
-            # Ayarlar > Test ile aynı mini görev
-            from .llm import LLMClient
-            c = LLMClient(s, prov)
-            c.complete_json("Yalnızca geçerli JSON döndür.",
-                            'Hipoglisemi hakkında tek soru: {"question": "...", "options": ["a","b","c","d"], '
-                            '"answer_index": 0}', max_tokens=600, temperature=0.3)
             # Sohbet: akış (stream) + çok turlu takip sorusu
             stream, hits, llm = qe.chat_stream("Diyabetik ketoasidozda potasyum neden önemli?", [])
             a1 = "".join(stream)
@@ -191,8 +185,13 @@ def run(pdf: str | None, out: str) -> int:
                 raise RuntimeError(f"Vaka sohbeti boş: {ans!r}")
             return {"chars": len(ans), "sample": ans[:160]}
 
+        def settings_test():
+            from .llm import test_provider
+            r = test_provider(s, prov)
+            return {"label": r["label"], "secs": round(r["secs"], 1), "notes": r["notes"], "q": r["question"][:100]}
+
         # Gerçek kullanım gibi adımlar arasında kısa ara (ücretsiz katmanın dakikalık sınırı)
-        for name, fn in ((f"{prov}: quiz üretimi", quiz), (f"{prov}: klasik cevap puanlama", grade),
+        for name, fn in ((f"{prov}: Ayarlar > Test düğmesi", settings_test), (f"{prov}: quiz üretimi", quiz), (f"{prov}: klasik cevap puanlama", grade),
                          (f"{prov}: vaka üretimi (paraklinik + test)", case),
                          (f"{prov}: sohbet (akış + takip sorusu)", chat), (f"{prov}: vaka sohbeti", case_chat)):
             _step(results, name, fn, required=False)

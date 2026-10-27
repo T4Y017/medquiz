@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import PROVIDERS, data_dir
-from core.llm import LLMClient
 from core.quiz import DIFFICULTIES
 
 from . import style
@@ -72,23 +71,15 @@ class ProviderRow:
         settings, provider = self.page.ctx.settings, self.provider
 
         def job(progress, task):
-            import time
-            t0 = time.time()
-            c = LLMClient(settings, provider)
-            # Gerçek kullanıma benzeyen mini görev: JSON biçiminde tek bir çoktan seçmeli soru
-            data = c.complete_json(
-                "Sen bir tıp eğitimcisisin. Yalnızca geçerli JSON döndür.",
-                'Hipoglisemi hakkında 4 şıklı tek bir kısa soru yaz. Biçim: '
-                '{"question": "...", "options": ["...","...","...","..."], "answer_index": 0}',
-                max_tokens=600, temperature=0.3)
-            q = str(data.get("question") or data.get("items", [{}])[0].get("question", "")).strip()
-            if not q:
-                raise RuntimeError(f"Yanıt alındı ama beklenen biçimde değil: {str(data)[:200]}")
-            return c.label, time.time() - t0, q
+            from core.llm import test_provider
+            return test_provider(settings, provider)
 
         def ok(res):
-            label, secs, q = res
-            self.status.setText(f"✓ Çalışıyor — {label} · {secs:.1f} sn · örnek soru: “{q[:90]}”")
+            note = ""
+            if res["notes"]:
+                note = " (birincil model şu an meşgul; anahtar geçerli, uygulama gerektiğinde yedek modeli kullanır)"
+            self.status.setText(f"✓ Çalışıyor — {res['label']} · {res['secs']:.1f} sn{note} · "
+                                f"örnek soru: “{res['question'][:90]}”")
             self.status.setStyleSheet(f"color:{style.OK};")
             self.status.setWordWrap(True)
 
