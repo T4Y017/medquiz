@@ -24,6 +24,7 @@ sistemi çalışır.
 | ✍️ **Klasik cevap puanlama** | 0–100 puan, doğru değinilen / eksik / hatalı noktalar, örnek cevap |
 | 🔁 **Yanlışları tekrar et** | %60 altı sorular tekrar sorulur; doğru yapınca listeden çıkar |
 | 📖 **Kaynak gösterme** | Her sorunun hangi belgeden (ve PDF'te hangi sayfadan) geldiği, kaynak metniyle birlikte |
+| 🗂 **Sohbet geçmişi** | Sohbetler otomatik kaydedilir (kişiye göre ayrı); soldan eski sohbete dönüp kaldığın yerden devam edersin |
 | 💬 **Sohbet** | Kütüphanedeki kaynaklara dayanan, [K1] [K2] atıflı soru-cevap |
 | 📚 **Genişletilebilir kütüphane** | Dosya / klasör / web linki ekle, sürükle-bırak, konu etiketi, sil |
 | 🤖 **Çoklu yapay zekâ** | Claude, Gemini ve OpenAI anahtarları aynı anda kayıtlı; sol menüden tek tıkla geçiş; biri kota/bağlantı hatası verirse otomatik olarak diğeri devreye girer; her cevapta hangi modelin yanıtladığı görünür |
@@ -69,7 +70,10 @@ Sonuç:
 1. **Ayarlar** → kullanmak istediğin her sağlayıcı için **Anahtar al ↗** ile API anahtarı oluştur, yapıştır →
    satırdaki **Test** ile doğrula → **Birincil yapay zekâ**yı seç → **Kaydet**.
    - Claude anahtarı: console.anthropic.com · Gemini anahtarı: aistudio.google.com
-   - "Birincil yanıt veremezse diğerine geç" açıkken biri kota doldurursa ya da bağlantı koparsa diğeri devralır.
+   - Yedekleme açıkken: yoğunluk/hız sınırında önce aynı sağlayıcının hafif modeli (Gemini Flash-Lite, Claude Haiku),
+     sonra diğer sağlayıcı devreye girer. Sınıra takılan model birkaç dakika otomatik atlanır.
+   - Gemini ücretsiz katmanında en yeni modeller sık sık hız sınırına takılır; gecikme yaşarsan Ayarlar'da Gemini
+     modelini `gemini-3.5-flash-lite` yap.
    - Sol menüdeki **Yapay zekâ** kutusundan istediğin an Claude ↔ Gemini geçişi yapabilirsin.
 
 > ℹ️ Claude Pro veya Google AI Pro / Gemini Advanced gibi **sohbet abonelikleri** bu uygulamada kullanılamaz;
