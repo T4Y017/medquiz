@@ -11,7 +11,7 @@ from typing import Callable, Iterator
 from . import normalize as nz
 from .db import Database
 from .llm import LLMClient, LLMError
-from .quiz import QuizEngine, format_context, source_label
+from .quiz import QuizEngine, format_context, make_llm, source_label
 from .retrieval import Retriever
 
 log = logging.getLogger(__name__)
@@ -188,7 +188,7 @@ class CaseEngine:
                          "tartışma, test soruları) İNGİLİZCE yaz (USMLE Step 2 CK tarzı). Kaynak Türkçe olsa bile.")
         user = (f"KAYNAK METİNLER:\n\n{context}\n\n=====\n\n{focus}"
                 f"Hedef seviye: {req.level} — {LEVELS.get(req.level, '')}\n\n{CASE_SPEC}\n\n" + "\n\n".join(extra))
-        llm = self.llm_factory()
+        llm = make_llm(self.llm_factory, "heavy")
         data = llm.complete_json(SYSTEM_CASE, user, max_tokens=16000, temperature=0.7)
         case = self._normalize(data, keymap, ctx)
         if len(case["stages"]) < 2:
@@ -393,6 +393,6 @@ class CaseEngine:
         msgs = [m for m in history[-6:] if m["role"] in ("user", "assistant")]
         msgs.append({"role": "user", "content": f"VAKA:\n{chr(10).join(lines)}\n\nKAYNAK METİNLER:\n{ctx}\n\n"
                                                 f"ÖĞRENCİNİN SORUSU: {question}"})
-        llm = self.llm_factory()
+        llm = make_llm(self.llm_factory, "light")
         self.last_chat_llm = llm
         return llm.stream(SYSTEM_CASE_CHAT, msgs, max_tokens=1500)

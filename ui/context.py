@@ -29,9 +29,12 @@ class AppContext(QObject):
         self.runner = Runner()
         self.embedder = self._make_embedder()
         self.retriever = Retriever(self.db, self.embedder)
-        self.engine = QuizEngine(self.db, self.retriever, lambda: RoutedLLM(self.settings))
-        self.case_engine = CaseEngine(self.db, self.retriever, self.engine, lambda: RoutedLLM(self.settings))
-        self.translator = Translator(self.db, lambda: RoutedLLM(self.settings))
+        factory = lambda task="heavy": RoutedLLM(self.settings, task=task)  # noqa: E731
+        self.engine = QuizEngine(self.db, self.retriever, factory)
+        self.case_engine = CaseEngine(self.db, self.retriever, self.engine, factory)
+        self.translator = Translator(self.db, lambda: RoutedLLM(self.settings, task="light"))
+        from core import usage
+        usage.attach(self.db)
         RoutedLLM.status_hook = staticmethod(self.ai_status.emit)    # arka plan iş parçacığından güvenli
         self.profile = self.settings.user_name or ""
 

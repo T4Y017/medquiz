@@ -60,6 +60,16 @@ CREATE TABLE IF NOT EXISTS vocab (
     lapses INTEGER DEFAULT 0
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_vocab_term ON vocab(lower(term), profile);
+CREATE TABLE IF NOT EXISTS usage (
+    day TEXT NOT NULL,
+    model TEXT NOT NULL,
+    count INTEGER DEFAULT 0,
+    PRIMARY KEY (day, model)
+);
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
 CREATE TABLE IF NOT EXISTS translations (
     key TEXT PRIMARY KEY,
     text TEXT NOT NULL,
@@ -286,6 +296,27 @@ class Database:
                 "SELECT DISTINCT profile FROM questions WHERE profile != '' ORDER BY profile"
             ).fetchall()
             return [r[0] for r in rows]
+
+    # ---------------------------------------------------------------- usage
+    def inc_usage(self, day: str, model: str) -> None:
+        with self._lock:
+            self.conn.execute("INSERT INTO usage(day, model, count) VALUES (?,?,1) "
+                              "ON CONFLICT(day, model) DO UPDATE SET count = count + 1", (day, model))
+            self.conn.commit()
+
+    def get_usage(self, day: str) -> dict[str, int]:
+        with self._lock:
+            return {r[0]: r[1] for r in self.conn.execute("SELECT model, count FROM usage WHERE day = ?", (day,))}
+
+    def set_meta(self, key: str, value: str) -> None:
+        with self._lock:
+            self.conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?,?)", (key, value))
+            self.conn.commit()
+
+    def get_meta(self, key: str, default: str = "") -> str:
+        with self._lock:
+            r = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return r[0] if r else default
 
     # --------------------------------------------------------- translations
     def get_translation(self, key: str) -> str | None:

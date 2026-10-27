@@ -84,8 +84,11 @@ Sonuç:
    - Claude anahtarı: console.anthropic.com · Gemini anahtarı: aistudio.google.com
    - Yedekleme açıkken: yoğunluk/hız sınırında önce aynı sağlayıcının hafif modeli (Gemini Flash-Lite, Claude Haiku),
      sonra diğer sağlayıcı devreye girer. Sınıra takılan model birkaç dakika otomatik atlanır.
-   - Gemini ücretsiz katmanında en yeni modeller sık sık hız sınırına takılır; gecikme yaşarsan Ayarlar'da Gemini
-     modelini `gemini-3.5-flash-lite` yap.
+   - **Gemini ücretsiz katman kotası:** `gemini-3.8-flash` için günde **20 istek** (Google'ın hata yanıtında
+     bildirdiği değer). Kota her gün Türkiye saatiyle ~10:00'da (Kasım–Mart ~11:00) sıfırlanır.
+     "Günlük kotayı koru" açıkken 3.8-flash yalnızca quiz (istek başına 5 soru) ve vaka üretiminde kullanılır;
+     sohbet, çeviri ve puanlama `gemini-3.5-flash-lite` ile yapılır. Ayarlar'da bugünkü kullanım görünür.
+     Daha yüksek sınır için Google AI Studio'da faturalandırmayı açabilirsin (ücretli katman).
    - Sol menüdeki **Yapay zekâ** kutusundan istediğin an Claude ↔ Gemini geçişi yapabilirsin.
 
 > ℹ️ Claude Pro veya Google AI Pro / Gemini Advanced gibi **sohbet abonelikleri** bu uygulamada kullanılamaz;

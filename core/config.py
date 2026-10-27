@@ -62,6 +62,7 @@ class Settings:
     gemini_model: str = "gemini-3.8-flash"
     fallback_enabled: bool = True
     auto_update: bool = True
+    gemini_save_quota: bool = True   # sohbet/çeviri/puanlamada hafif model: güçlü modelin günlük kotası korunur
     use_embeddings: bool = True
     embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     user_name: str = ""

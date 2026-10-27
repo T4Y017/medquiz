@@ -153,6 +153,15 @@ class SettingsPage(QWidget):
         fb_note.setObjectName("muted")
         fb_note.setWordWrap(True)
         f.addRow("", fb_note)
+        self.save_quota = QCheckBox("Gemini: günlük kotayı koru — sohbet, çeviri ve puanlamada hafif modeli kullan")
+        self.save_quota.setToolTip("Ücretsiz katmanda güçlü Gemini modellerinin günlük sınırı düşüktür (ör. 20 istek).\n"
+                                   "Açıkken güçlü model yalnızca quiz ve vaka üretiminde kullanılır.")
+        self.save_quota.setChecked(s.gemini_save_quota)
+        f.addRow("", self.save_quota)
+        self.usage_lbl = QLabel("")
+        self.usage_lbl.setObjectName("muted")
+        self.usage_lbl.setWordWrap(True)
+        f.addRow("Bugünkü kullanım", self.usage_lbl)
         cl.addLayout(f)
         note = QLabel("ℹ️ Claude Pro veya Google AI Pro/Gemini Advanced gibi sohbet abonelikleri burada kullanılamaz; "
                       "API anahtarları ayrı faturalandırılır. Anahtarlar yalnızca bu bilgisayarda saklanır.")
@@ -239,6 +248,23 @@ class SettingsPage(QWidget):
         root.addStretch()
         ctx.settings_changed.connect(self._sync_primary)
 
+    def showEvent(self, e):
+        self.refresh_usage()
+        super().showEvent(e)
+
+    def refresh_usage(self):
+        from core import usage
+        u = usage.today()
+        if not u:
+            self.usage_lbl.setText("Bugün henüz Gemini isteği yapılmadı. (Kota her gün TR saatiyle ~10:00'da sıfırlanır)")
+            return
+        parts = []
+        for m, d in sorted(u.items()):
+            lim = f"/{d['limit']}" if d["limit"] else ""
+            warn = " — ⚠ günlük kota doldu" if d["exhausted"] else ""
+            parts.append(f"{m}: {d['used']}{lim}{warn}")
+        self.usage_lbl.setText(" · ".join(parts) + "   (kota her gün TR saatiyle ~10:00'da sıfırlanır)")
+
     def attach_updater(self, upd):
         self.upd_btn.setEnabled(True)
         self.upd_btn.clicked.connect(lambda: upd.check(silent=False))
@@ -273,6 +299,7 @@ class SettingsPage(QWidget):
         s.use_embeddings = self.emb.isChecked()
         s.font_size = self.font.value()
         s.auto_update = self.auto_upd.isChecked()
+        s.gemini_save_quota = self.save_quota.isChecked()
         if not s.key_for(s.provider) and s.has_any_key:
             first = s.configured_providers()[0]
             QMessageBox.information(

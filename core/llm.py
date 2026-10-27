@@ -77,6 +77,8 @@ def _from_gemini(e, model: str) -> LLMError:
         return LLMError(f"Gemini: '{model}' modeli bulunamadı. Ayarlar'dan başka bir model seçin.", True)
     if st == 429:
         if e.daily_quota:
+            from . import usage
+            usage.note_limit(model, e.quota_value)
             lim = f" (günlük sınır: {e.quota_value} istek)" if e.quota_value else ""
             return LLMError(f"{model} için ücretsiz günlük kota doldu{lim}. Kota her gün Türkiye saatiyle "
                             "10:00-11:00 arasında sıfırlanır.", True, cooldown=3 * 3600, retry_same=False)
@@ -169,6 +171,8 @@ class LLMClient:
             text = self._native_call(lambda: self._native.complete(system, messages, mt, temperature, json_mode))
             res = self._native.last
             self.last_usage = res.usage
+            from . import usage
+            usage.record(self.model)
             self.last_finish = "length" if res.finish == "MAX_TOKENS" else res.finish.lower()
             log.info("Gemini %s: %.1f sn, bitiş=%s, kullanım=%s", self.model, res.secs, res.finish, res.usage)
             return text
@@ -209,6 +213,8 @@ class LLMClient:
             mt = min(65536, max_tokens + self.THINKING_HEADROOM)
             try:
                 yield from self._native.stream(system, messages, mt, temperature)
+                from . import usage
+                usage.record(self.model)
             except GeminiAPIError as e:
                 log.warning("Gemini %s akış hatası: status=%s kota=%s bekle=%s tür=%s mesaj=%s", self.model,
                             e.status, e.quota_id, e.retry_after, e.kind, e.message[:300])
@@ -276,13 +282,21 @@ class RoutedLLM:
     def _ordered(self) -> list[tuple[str, str]]:
         """Dinlenmedeki modelleri sona atar (hiçbiri müsait değilse yine de dener)."""
         now = time.time()
+        from . import usage
+        for c in self.candidates:          # bugün günlük kotası dolan model (uygulama yeniden açılsa da) atlanır
+            if c[0] == "gemini" and usage.is_exhausted(c[1]) and self._cooldown_until.get(c, 0) <= now:
+                self._cooldown_until[c] = now + 1800
         ready = [c for c in self.candidates if self._cooldown_until.get(c, 0) <= now]
         cooling = [c for c in self.candidates if c not in ready]
         return ready + cooling
 
-    def __init__(self, settings: Settings, client_cls=LLMClient):
+    def __init__(self, settings: Settings, client_cls=LLMClient, task: str = "heavy"):
+        """task: "heavy" (quiz/vaka üretimi — güçlü model) ya da "light" (sohbet, çeviri, puanlama).
+        Gemini'de 'kotayı koru' açıksa hafif işler önce hafif modelle yapılır; güçlü modelin günlük kotası
+        asıl önemli işlere kalır."""
         self.settings = settings
         self.client_cls = client_cls
+        self.task = task
         providers = settings.configured_providers()
         if not providers:
             raise LLMError("Hiç API anahtarı girilmemiş. Ayarlar sekmesinden Claude, Gemini veya OpenAI anahtarı ekleyin.")
@@ -295,8 +309,15 @@ class RoutedLLM:
         self.candidates: list[tuple[str, str]] = []
         for p in providers:
             primary = settings.model_for(p)
-            self.candidates.append((p, primary))
             backup = PROVIDERS[p].get("backup_model")
+            light_first = (task == "light" and p == "gemini" and getattr(settings, "gemini_save_quota", True)
+                           and backup and backup != primary)
+            if light_first:
+                self.candidates.append((p, backup))
+                if settings.fallback_enabled:
+                    self.candidates.append((p, primary))
+                continue
+            self.candidates.append((p, primary))
             if settings.fallback_enabled and backup and backup != primary:
                 self.candidates.append((p, backup))
         self.used: str = ""

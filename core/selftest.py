@@ -35,12 +35,14 @@ def run(pdf: str | None, out: str) -> int:
                         handlers=[logging.FileHandler(Path(os.environ["MEDQUIZ_DATA_DIR"]) / "medquiz.log",
                                                       encoding="utf-8")], force=True)
     results: list[dict] = []
-    from .config import Settings, data_dir
+    from .config import PROVIDERS, Settings, data_dir
     from .db import Database
     from .ingest import chunk_doc, load_any
     from .retrieval import Embedder, Retriever
 
     db = Database(data_dir() / "medquiz.db")
+    from . import usage as _usage
+    _usage.attach(db)
     state: dict = {}
 
     def ingest():
@@ -144,13 +146,20 @@ def run(pdf: str | None, out: str) -> int:
         setattr(s, f"{prov}_api_key", key)
         s.provider = prov
         s.fallback_enabled = True    # yalnızca bu sağlayıcının anahtarı var: birincil + hafif yedek modeli
+        if prov == "gemini":
+            # Kullanıcının güçlü modeldeki küçük günlük ücretsiz kotasını (ör. 20 istek) CI tüketmesin:
+            # testler hafif modelle yapılır. Yerel API istemcisi her iki model için aynı koddur.
+            s.gemini_model = PROVIDERS["gemini"]["backup_model"]
         from .case import CaseEngine, CaseRequest
-        from .llm import RoutedLLM
+        from .llm import LLMClient, RoutedLLM
         from .quiz import GenRequest, QuizEngine
 
         retr2 = Retriever(db, None)
-        qe = QuizEngine(db, retr2, lambda s=s: RoutedLLM(s))
-        ce = CaseEngine(db, retr2, qe, lambda s=s: RoutedLLM(s))
+        def factory(task="heavy", s=s):
+            return RoutedLLM(s, task=task)
+
+        qe = QuizEngine(db, retr2, factory)
+        ce = CaseEngine(db, retr2, qe, factory)
 
         def quiz(qe=qe):
             qs = qe.generate(GenRequest(qtype="mixed", count=3, difficulty="Orta", topic="diyabetik ketoasidoz"))
@@ -195,36 +204,16 @@ def run(pdf: str | None, out: str) -> int:
             return {"chars": len(ans), "sample": ans[:160]}
 
         def gemini38_direct():
-            """gemini-3.8-flash'ı YEDEKSİZ dener: model bilgisi, küçük JSON, quiz boyutunda istek, akış."""
-            from .gemini_native import GeminiAPIError, GeminiNative
-            from .llm import LLMClient
-            out: dict = {}
-            m38 = "gemini-3.8-flash"
-            try:
-                out["model_info"] = GeminiNative(key, m38).model_info()
-            except GeminiAPIError as e:
-                out["model_info_error"] = f"{e.status} {e.quota_id} {e.message[:150]}"
-            for name, mt, prompt in (
-                    ("small_json", 600, 'Tek kısa soru: {"question": "...", "options": ["a","b","c","d"], "answer_index": 0}'),
-                    ("quiz_size", 8000, "Diyabetik ketoasidoz hakkında 5 adet 5 şıklı TUS sorusu yaz. JSON: "
-                                        '{"questions":[{"question":"...","options":["..."],"answer_index":0,'
-                                        '"explanation":"..."}]}')):
-                t0 = time.time()
-                c = LLMClient(s, "gemini", m38)
-                try:
-                    d = c.complete_json("Sen tıp eğitimcisisin. Yalnızca JSON döndür.", prompt, max_tokens=mt,
-                                        temperature=0.5)
-                    out[name] = {"ok": True, "secs": round(time.time() - t0, 1), "usage": c.last_usage,
-                                 "items": len(d.get("questions", [])) if isinstance(d, dict) else None}
-                except Exception as e:  # noqa: BLE001
-                    cause = getattr(e, "__cause__", None)
-                    out[name] = {"ok": False, "secs": round(time.time() - t0, 1), "error": str(e)[:200],
-                                 "status": getattr(cause, "status", None), "quota": getattr(cause, "quota_id", ""),
-                                 "retry_after": getattr(cause, "retry_after", None)}
-                time.sleep(5)
-            if not any(isinstance(v, dict) and v.get("ok") for v in out.values()):
-                raise RuntimeError(json.dumps(out, ensure_ascii=False)[:800])
-            return out
+            """gemini-3.8-flash: yalnızca model bilgisi (kota harcamaz) + yerel istemcinin Türkçe çıktısı."""
+            from . import usage
+            from .gemini_native import GeminiNative
+            info = GeminiNative(key, "gemini-3.8-flash").model_info()
+            c = LLMClient(s, "gemini", s.gemini_model)
+            txt = c.complete("Kısa yanıt ver.", [{"role": "user", "content": "Türkçe tek cümle: şeker, ığdır, göğüs."}],
+                             max_tokens=200, temperature=0)
+            if any(bad in txt for bad in ("Ã", "Ä", "Å")):
+                raise RuntimeError(f"Türkçe karakter bozulması: {txt!r}")
+            return {"model_info": info, "turkish_ok": True, "sample": txt[:80], "usage_today": usage.today()}
 
         def settings_test():
             from .llm import test_provider
@@ -237,7 +226,7 @@ def run(pdf: str | None, out: str) -> int:
                                         language="en"))
             q = qs[0]["question"]
             ascii_ratio = sum(c.isascii() for c in q) / max(1, len(q))
-            tr = Translator(db, lambda s=s: RoutedLLM(s))
+            tr = Translator(db, lambda s=s: RoutedLLM(s, task="light"))
             t = tr.translate(q)
             turkish = any(ch in t for ch in "çğışöüÇĞİŞÖÜ")
             if not turkish:
@@ -252,7 +241,7 @@ def run(pdf: str | None, out: str) -> int:
                          (f"{prov}: vaka üretimi (paraklinik + test)", case),
                          (f"{prov}: sohbet (akış + takip sorusu)", chat), (f"{prov}: vaka sohbeti", case_chat)]
         if prov == "gemini":
-            steps.insert(0, ("gemini: 3.8-flash doğrudan (yedeksiz) tanılama", gemini38_direct))
+            steps.insert(0, ("gemini: model bilgisi + Türkçe karakter + kullanım sayacı", gemini38_direct))
         for name, fn in steps:
             _step(results, name, fn, required=False)
             time.sleep(10)

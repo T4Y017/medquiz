@@ -138,6 +138,8 @@ class GeminiNative:
             raise err
         parts: list[str] = []
         finish, usage, blocked = "", {}, ""
+        # SSE yanıtı charset belirtmez; requests ISO-8859-1 varsayar ve Türkçe karakterler bozulur ("Ã¼")
+        r.encoding = "utf-8"
         try:
             for raw in r.iter_lines(decode_unicode=True):
                 if time.time() - t0 > self.total_timeout:

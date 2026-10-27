@@ -120,6 +120,14 @@ class GenRequest:
     language: str = "tr"       # "tr" | "en"
 
 
+def make_llm(factory, task: str):
+    """Fabrika görev türünü (heavy/light) destekliyorsa iletir; eski tek argümansız fabrikalarla da çalışır."""
+    try:
+        return factory(task)
+    except TypeError:
+        return factory()
+
+
 class QuizEngine:
     def __init__(self, db: Database, retriever: Retriever, llm_factory: Callable[[], LLMClient]):
         self.db = db
@@ -132,7 +140,7 @@ class QuizEngine:
                  should_stop: Callable[[], bool] | None = None) -> list[dict]:
         if self.retriever.size == 0:
             raise LLMError("Kütüphane boş. Önce Kütüphane sekmesinden PDF, Word, metin veya web sayfası ekleyin.")
-        llm = self.llm_factory()
+        llm = make_llm(self.llm_factory, "heavy")
         out: list[dict] = []
         remaining = max(1, req.count)
         recent = self.db.recent_question_texts(40)
@@ -259,7 +267,7 @@ class QuizEngine:
         if not answer.strip():
             return {"score": 0, "covered": [], "missing": q.get("key_points", []), "errors": [],
                     "feedback": "Cevap boş bırakıldı."}
-        llm = self.llm_factory()
+        llm = make_llm(self.llm_factory, "light")
         kp = "\n".join(f"- {k}" for k in q.get("key_points", []))
         src = "\n\n".join(q.get("source_texts", []))[:6000]
         user = (f"SORU:\n{q['question']}\n\nANAHTAR NOKTALAR:\n{kp}\n\nÖRNEK CEVAP:\n{q.get('model_answer', '')}\n\n"
@@ -290,5 +298,5 @@ class QuizEngine:
         context, _ = format_context(hits) if hits else ("(Kütüphanede ilgili kaynak bulunamadı.)", {})
         msgs = [m for m in history[-8:] if m["role"] in ("user", "assistant")]
         msgs.append({"role": "user", "content": f"KAYNAK METİNLER:\n\n{context}\n\n=====\n\nSORU: {question}"})
-        llm = self.llm_factory()
+        llm = make_llm(self.llm_factory, "light")
         return llm.stream(SYSTEM_CHAT, msgs), hits, llm
