@@ -20,6 +20,7 @@ class AppContext(QObject):
     profile_changed = Signal(str)
     index_status = Signal(str)
     vocab_changed = Signal()
+    ai_status = Signal(str)          # "model meşgul, 20 sn sonra tekrar" gibi anlık durumlar
 
     def __init__(self):
         super().__init__()
@@ -31,6 +32,7 @@ class AppContext(QObject):
         self.engine = QuizEngine(self.db, self.retriever, lambda: RoutedLLM(self.settings))
         self.case_engine = CaseEngine(self.db, self.retriever, self.engine, lambda: RoutedLLM(self.settings))
         self.translator = Translator(self.db, lambda: RoutedLLM(self.settings))
+        RoutedLLM.status_hook = staticmethod(self.ai_status.emit)    # arka plan iş parçacığından güvenli
         self.profile = self.settings.user_name or ""
 
     def _make_embedder(self) -> Embedder | None:

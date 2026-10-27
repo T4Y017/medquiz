@@ -115,6 +115,12 @@ class MainWindow(QMainWindow):
 
         self.chat.quiz_btn.clicked.connect(self._quiz_from_chat)
         ctx.settings_changed.connect(self._apply_style)
+        self.statusBar().setStyleSheet("QStatusBar{background:#ecfdf5; color:#065f46; border-top:1px solid #a7f3d0;}")
+        self.statusBar().hide()
+        self._sb_timer = QTimer(self)
+        self._sb_timer.setSingleShot(True)
+        self._sb_timer.timeout.connect(self.statusBar().hide)
+        ctx.ai_status.connect(self._show_ai_status)
 
         from ui.update_ui import UpdateController
         self.updater = UpdateController(ctx, self)
@@ -136,6 +142,11 @@ class MainWindow(QMainWindow):
             self.ctx.set_profile(name)
             if name and self.profile_cb.findText(name) < 0:
                 self.profile_cb.addItem(name)
+
+    def _show_ai_status(self, msg: str):
+        self.statusBar().show()
+        self.statusBar().showMessage("🤖 " + msg)
+        self._sb_timer.start(15000)
 
     def _fill_ai(self):
         s = self.ctx.settings

@@ -14,8 +14,9 @@ log = logging.getLogger(__name__)
 
 class LLMError(Exception):
     def __init__(self, msg: str, fallback_ok: bool = False, transient: bool = False, provider_wide: bool = False,
-                 cooldown: float = 0.0, retry_same: bool = True):
+                 cooldown: float = 0.0, retry_same: bool = True, retry_after: float = 0.0):
         super().__init__(msg)
+        self.retry_after = retry_after  # sağlayıcının önerdiği bekleme (sn); 0 = bilinmiyor
         self.cooldown = cooldown        # bu model kaç saniye dinlenmeye alınsın
         self.retry_same = retry_same    # aynı modeli hemen bir kez daha denemek mantıklı mı
         self.provider_wide = provider_wide  # anahtar/kota/izin: aynı sağlayıcının diğer modelleri de başarısız olur
@@ -55,6 +56,39 @@ def _classify(e: Exception, provider: str) -> LLMError:
     return LLMError(f"{name} hatası: {msg[:300]}", False)
 
 
+def _from_gemini(e, model: str) -> LLMError:
+    """Gemini yerel API hatasını, kota türü ve önerilen bekleme süresiyle birlikte LLMError'a çevirir."""
+    st, msg, low = e.status, e.message, e.message.lower()
+    if e.kind == "timeout":
+        return LLMError(f"Gemini ({model}) zamanında yanıt vermedi.", True, True, cooldown=60, retry_same=True,
+                        retry_after=3)
+    if e.kind == "network":
+        return LLMError(f"Gemini sunucusuna bağlanılamadı: {msg}", True, True, retry_after=3)
+    if e.kind == "blocked":
+        return LLMError(f"Gemini yanıtı güvenlik filtresine takıldı.", True)
+    if e.kind in ("length", "empty"):
+        return LLMError(f"Gemini ({model}): {msg}", True, True, retry_after=1)
+    if st in (400, 401) and ("api key" in low or "api_key" in low):
+        return LLMError("Gemini API anahtarı geçersiz. Ayarlar sekmesinden kontrol edin.", True, provider_wide=True)
+    if st == 403:
+        return LLMError(f"Gemini: bu anahtarın erişim izni yok ya da bölge desteklenmiyor ({msg[:120]}).", True,
+                        provider_wide=True)
+    if st == 404:
+        return LLMError(f"Gemini: '{model}' modeli bulunamadı. Ayarlar'dan başka bir model seçin.", True)
+    if st == 429:
+        if e.daily_quota:
+            lim = f" (günlük sınır: {e.quota_value} istek)" if e.quota_value else ""
+            return LLMError(f"{model} için ücretsiz günlük kota doldu{lim}. Kota her gün Türkiye saatiyle "
+                            "10:00-11:00 arasında sıfırlanır.", True, cooldown=3 * 3600, retry_same=False)
+        wait = e.retry_after or 15
+        return LLMError(f"{model} dakikalık istek sınırına ulaştı; {int(wait)} sn sonra tekrar denenecek.", True, True,
+                        cooldown=wait, retry_after=wait)
+    if st >= 500:
+        return LLMError(f"{model} şu an yoğun (Google sunucusu {st}).", True, True, cooldown=45,
+                        retry_after=e.retry_after or 8)
+    return LLMError(f"Gemini hatası ({st}): {msg[:300]}", False)
+
+
 class LLMClient:
     """Tek bir sağlayıcıya bağlı istemci."""
 
@@ -73,10 +107,16 @@ class LLMClient:
         if not key:
             raise LLMError(f"{PROVIDERS[self.provider]['short']} API anahtarı girilmemiş. Ayarlar sekmesinden ekleyin.",
                            True)
+        self.last_usage: dict = {}
+        self._native = None
         if self.provider == "anthropic":
             import anthropic
 
             self._client = anthropic.Anthropic(api_key=key, timeout=self._timeout(), max_retries=1)
+        elif self.provider == "gemini" and settings.extra.get("gemini_api", "native") == "native":
+            from .gemini_native import GeminiNative
+
+            self._native = GeminiNative(key, self.model)
         else:
             import openai
 
@@ -111,9 +151,27 @@ class LLMClient:
                 return self._client.chat.completions.create(**kw)
             raise
 
+    def _native_call(self, fn):
+        from .gemini_native import GeminiAPIError
+        try:
+            return fn()
+        except GeminiAPIError as e:
+            log.warning("Gemini %s hata: status=%s kota=%s değer=%s bekle=%s tür=%s mesaj=%s", self.model, e.status,
+                        e.quota_id, e.quota_value, e.retry_after, e.kind, e.message[:300])
+            raise _from_gemini(e, self.model) from e
+
     def complete(self, system: str, messages: list[dict], max_tokens: int = 4096,
-                 temperature: float = 0.7) -> str:
+                 temperature: float = 0.7, json_mode: bool = False) -> str:
         self.last_finish = ""
+        if self._native is not None:
+            # düşünme token'ları çıktı bütçesinden düşülür: pay bırak
+            mt = min(65536, max_tokens + self.THINKING_HEADROOM)
+            text = self._native_call(lambda: self._native.complete(system, messages, mt, temperature, json_mode))
+            res = self._native.last
+            self.last_usage = res.usage
+            self.last_finish = "length" if res.finish == "MAX_TOKENS" else res.finish.lower()
+            log.info("Gemini %s: %.1f sn, bitiş=%s, kullanım=%s", self.model, res.secs, res.finish, res.usage)
+            return text
         try:
             if self.provider == "anthropic":
                 r = self._client.messages.create(
@@ -146,6 +204,16 @@ class LLMClient:
 
     def stream(self, system: str, messages: list[dict], max_tokens: int = 2048,
                temperature: float = 0.4) -> Iterator[str]:
+        if self._native is not None:
+            from .gemini_native import GeminiAPIError
+            mt = min(65536, max_tokens + self.THINKING_HEADROOM)
+            try:
+                yield from self._native.stream(system, messages, mt, temperature)
+            except GeminiAPIError as e:
+                log.warning("Gemini %s akış hatası: status=%s kota=%s bekle=%s tür=%s mesaj=%s", self.model,
+                            e.status, e.quota_id, e.retry_after, e.kind, e.message[:300])
+                raise _from_gemini(e, self.model) from e
+            return
         try:
             if self.provider == "anthropic":
                 with self._client.messages.stream(
@@ -171,7 +239,7 @@ class LLMClient:
         messages = [{"role": "user", "content": user}]
         last_err = ""
         for _ in range(retries + 1):
-            text = self.complete(system, messages, max_tokens=max_tokens, temperature=temperature)
+            text = self.complete(system, messages, max_tokens=max_tokens, temperature=temperature, json_mode=True)
             try:
                 return parse_json(text)
             except ValueError as e:
@@ -248,15 +316,50 @@ class RoutedLLM:
         except TypeError:          # eski imzalı test istemcileri
             return self.client_cls(self.settings, p)
 
+    # Bekleme politikası: sağlayıcı "N sn sonra dene" derse (ör. Gemini dakikalık sınır) ve N makulse beklenir,
+    # birincil model hemen yedeğe bırakılmaz. Toplam bekleme bir istek için WAIT_BUDGET'ı aşmaz.
+    MAX_WAIT_PER_TRY = 40.0
+    WAIT_BUDGET = 75.0
+    status_hook = None          # arayüzün durum çubuğu için: callable(str)
+
+    def _status(self, msg: str) -> None:
+        log.info(msg)
+        hook = type(self).status_hook
+        if hook:
+            try:
+                hook(msg)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _attempts(self, p: str, m: str) -> int:
+        return 3 if (p, m) == self.candidates[0] else 2
+
+    def _handle(self, e: LLMError, p: str, m: str, attempt: int, waited: list[float]) -> bool:
+        """Hata sonrası: True → aynı modeli tekrar dene (gerekirse bekledikten sonra), False → sıradakine geç."""
+        self._cool(p, m, getattr(e, "cooldown", 0))
+        if not e.transient or not getattr(e, "retry_same", True) or attempt >= self._attempts(p, m):
+            return False
+        wait = getattr(e, "retry_after", 0) or self.RETRY_WAIT
+        if wait > self.MAX_WAIT_PER_TRY or waited[0] + wait > self.WAIT_BUDGET:
+            return False
+        short = f"{PROVIDERS[p]['short']} · {m}"
+        self._status(f"{short} şu an meşgul — {int(round(wait))} sn sonra tekrar deneniyor ({attempt + 1}. deneme)…")
+        time.sleep(wait)
+        waited[0] += wait
+        self._cooldown_until.pop((p, m), None)
+        return True
+
     def _run(self, fn):
         errors: list[str] = []
         dead: set[str] = set()
         order = self._ordered()
-        n = len(order)
+        waited = [0.0]
         for i, (p, m) in enumerate(order):
             if p in dead:
                 continue
-            for attempt in (1, 2):
+            attempt = 0
+            while True:
+                attempt += 1
                 try:
                     client = self._make(p, m)
                     res = fn(client)
@@ -266,9 +369,7 @@ class RoutedLLM:
                     return res
                 except LLMError as e:
                     log.warning("%s/%s başarısız (deneme %d): %s", p, m, attempt, e)
-                    self._cool(p, m, getattr(e, "cooldown", 0))
-                    if e.transient and attempt == 1 and getattr(e, "retry_same", True):
-                        time.sleep(self.RETRY_WAIT)
+                    if self._handle(e, p, m, attempt, waited):
                         continue
                     errors.append(f"{PROVIDERS[p]['short']} · {m}: {e}")
                     if not e.fallback_ok:
@@ -276,9 +377,11 @@ class RoutedLLM:
                     if getattr(e, "provider_wide", False):
                         dead.add(p)
                     break
-            if i < n - 1:
-                np_, nm = order[i + 1]
-                self.notes.append(f"{p}/{m} yanıt vermedi → {PROVIDERS[np_]['short']} · {nm} deneniyor.")
+            nxt = next(((np_, nm) for np_, nm in order[i + 1:] if np_ not in dead), None)
+            if nxt:
+                self.notes.append(f"{p}/{m} yanıt vermedi → {PROVIDERS[nxt[0]]['short']} · {nxt[1]} deneniyor.")
+                self._status(f"{PROVIDERS[p]['short']} · {m} yanıt veremedi ({errors[-1].split(': ', 1)[-1][:80]}) "
+                             f"→ {PROVIDERS[nxt[0]]['short']} · {nxt[1]} ile devam ediliyor.")
         if len(errors) > 1:
             raise LLMError("Hiçbir yapay zekâ yanıt veremedi:\n• " + "\n• ".join(errors))
         raise LLMError(errors[0] if errors else "Bilinmeyen hata")
@@ -295,12 +398,15 @@ class RoutedLLM:
                temperature: float = 0.4) -> Iterator[str]:
         """İlk parça gelmeden hata olursa tekrar dener / sıradaki modele geçer; yayın başladıktan sonra geçmez."""
         errors: list[str] = []
-        n = len(self.candidates)
         dead: set[str] = set()
-        for i, (p, m) in enumerate(self._ordered()):
+        waited = [0.0]
+        order = self._ordered()
+        for i, (p, m) in enumerate(order):
             if p in dead:
                 continue
-            for attempt in (1, 2):
+            attempt = 0
+            while True:
+                attempt += 1
                 started = False
                 try:
                     client = self._make(p, m)
@@ -309,14 +415,13 @@ class RoutedLLM:
                     for piece in client.stream(system, messages, max_tokens=max_tokens, temperature=temperature):
                         started = True
                         yield piece
+                    self._cooldown_until.pop((p, m), None)
                     return
                 except LLMError as e:
                     log.warning("%s/%s (akış) başarısız (deneme %d): %s", p, m, attempt, e)
-                    self._cool(p, m, getattr(e, "cooldown", 0))
                     if started:
                         raise
-                    if e.transient and attempt == 1 and getattr(e, "retry_same", True):
-                        time.sleep(self.RETRY_WAIT)
+                    if self._handle(e, p, m, attempt, waited):
                         continue
                     errors.append(f"{PROVIDERS[p]['short']} · {m}: {e}")
                     if not e.fallback_ok:
@@ -324,6 +429,10 @@ class RoutedLLM:
                     if getattr(e, "provider_wide", False):
                         dead.add(p)
                     break
+            nxt = next(((np_, nm) for np_, nm in order[i + 1:] if np_ not in dead), None)
+            if nxt:
+                self._status(f"{PROVIDERS[p]['short']} · {m} yanıt veremedi → "
+                             f"{PROVIDERS[nxt[0]]['short']} · {nxt[1]} ile devam ediliyor.")
         raise LLMError(errors[0] if len(errors) == 1 else "Hiçbir yapay zekâ yanıt veremedi:\n• " + "\n• ".join(errors))
 
 
@@ -384,6 +493,22 @@ def test_provider(settings: Settings, provider: str) -> dict:
             last = e
             if getattr(e, "provider_wide", False) or not e.fallback_ok:
                 raise
+            wait = getattr(e, "retry_after", 0)
+            if e.transient and 0 < wait <= 40 and getattr(e, "retry_same", True):
+                time.sleep(wait)               # dakikalık sınır: önerilen süre kadar bekleyip bir kez daha dene
+                try:
+                    c = LLMClient(settings, provider, m)
+                    data = c.complete_json(
+                        "Sen bir tıp eğitimcisisin. Yalnızca geçerli JSON döndür.",
+                        'Hipoglisemi hakkında 4 şıklı tek bir kısa soru yaz. Biçim: '
+                        '{"question": "...", "options": ["...","...","...","..."], "answer_index": 0}',
+                        max_tokens=600, temperature=0.3)
+                    q = str(data.get("question") or "").strip()
+                    if q:
+                        notes.append(f"{m} ilk denemede meşguldü, {int(wait)} sn bekleyince yanıt verdi")
+                        return {"label": c.label, "secs": time.time() - t0, "question": q, "notes": notes}
+                except LLMError as e2:
+                    last = e = e2
             if e.transient:
                 notes.append(f"{m} şu an meşgul ({e}); anahtar geçerli")
             else:

@@ -77,7 +77,7 @@ class ProviderRow:
         def ok(res):
             note = ""
             if res["notes"]:
-                note = " (birincil model şu an meşgul; anahtar geçerli, uygulama gerektiğinde yedek modeli kullanır)"
+                note = " · " + "; ".join(res["notes"])
             self.status.setText(f"✓ Çalışıyor — {res['label']} · {res['secs']:.1f} sn{note} · "
                                 f"örnek soru: “{res['question'][:90]}”")
             self.status.setStyleSheet(f"color:{style.OK};")

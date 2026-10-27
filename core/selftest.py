@@ -194,6 +194,38 @@ def run(pdf: str | None, out: str) -> int:
                 raise RuntimeError(f"Vaka sohbeti boş: {ans!r}")
             return {"chars": len(ans), "sample": ans[:160]}
 
+        def gemini38_direct():
+            """gemini-3.8-flash'ı YEDEKSİZ dener: model bilgisi, küçük JSON, quiz boyutunda istek, akış."""
+            from .gemini_native import GeminiAPIError, GeminiNative
+            from .llm import LLMClient
+            out: dict = {}
+            m38 = "gemini-3.8-flash"
+            try:
+                out["model_info"] = GeminiNative(key, m38).model_info()
+            except GeminiAPIError as e:
+                out["model_info_error"] = f"{e.status} {e.quota_id} {e.message[:150]}"
+            for name, mt, prompt in (
+                    ("small_json", 600, 'Tek kısa soru: {"question": "...", "options": ["a","b","c","d"], "answer_index": 0}'),
+                    ("quiz_size", 8000, "Diyabetik ketoasidoz hakkında 5 adet 5 şıklı TUS sorusu yaz. JSON: "
+                                        '{"questions":[{"question":"...","options":["..."],"answer_index":0,'
+                                        '"explanation":"..."}]}')):
+                t0 = time.time()
+                c = LLMClient(s, "gemini", m38)
+                try:
+                    d = c.complete_json("Sen tıp eğitimcisisin. Yalnızca JSON döndür.", prompt, max_tokens=mt,
+                                        temperature=0.5)
+                    out[name] = {"ok": True, "secs": round(time.time() - t0, 1), "usage": c.last_usage,
+                                 "items": len(d.get("questions", [])) if isinstance(d, dict) else None}
+                except Exception as e:  # noqa: BLE001
+                    cause = getattr(e, "__cause__", None)
+                    out[name] = {"ok": False, "secs": round(time.time() - t0, 1), "error": str(e)[:200],
+                                 "status": getattr(cause, "status", None), "quota": getattr(cause, "quota_id", ""),
+                                 "retry_after": getattr(cause, "retry_after", None)}
+                time.sleep(5)
+            if not any(isinstance(v, dict) and v.get("ok") for v in out.values()):
+                raise RuntimeError(json.dumps(out, ensure_ascii=False)[:800])
+            return out
+
         def settings_test():
             from .llm import test_provider
             r = test_provider(s, prov)
@@ -215,10 +247,13 @@ def run(pdf: str | None, out: str) -> int:
                     "term": d["term"], "meaning": d["meaning"], "ipa": d["ipa"], "cached": tr.cached(q) is not None}
 
         # Gerçek kullanım gibi adımlar arasında kısa ara (ücretsiz katmanın dakikalık sınırı)
-        for name, fn in ((f"{prov}: Ayarlar > Test düğmesi", settings_test), (f"{prov}: quiz üretimi", quiz),
+        steps = [(f"{prov}: Ayarlar > Test düğmesi", settings_test), (f"{prov}: quiz üretimi", quiz),
                          (f"{prov}: İngilizce soru + çeviri + kelime tanımı", english_and_translate), (f"{prov}: klasik cevap puanlama", grade),
                          (f"{prov}: vaka üretimi (paraklinik + test)", case),
-                         (f"{prov}: sohbet (akış + takip sorusu)", chat), (f"{prov}: vaka sohbeti", case_chat)):
+                         (f"{prov}: sohbet (akış + takip sorusu)", chat), (f"{prov}: vaka sohbeti", case_chat)]
+        if prov == "gemini":
+            steps.insert(0, ("gemini: 3.8-flash doğrudan (yedeksiz) tanılama", gemini38_direct))
+        for name, fn in steps:
             _step(results, name, fn, required=False)
             time.sleep(10)
 
