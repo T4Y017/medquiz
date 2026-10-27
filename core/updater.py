@@ -38,6 +38,7 @@ class UpdateInfo:
     sha256: str
     notes: str
     page: str
+    alt_url: str = ""
 
 
 def parse_version(v: str) -> tuple[int, ...]:
@@ -85,8 +86,9 @@ def check(repo: str = UPDATE_REPO, timeout: float = 10.0, get=None) -> UpdateInf
     body = data.get("body") or ""
     m = re.search(r"sha256:\s*([0-9a-fA-F]{64})", body)
     return UpdateInfo(
-        version=tag.lstrip("vV"), url=asset["browser_download_url"], size=int(asset.get("size") or 0),
-        sha256=m.group(1).lower() if m else "", notes=_clean_notes(body), page=data.get("html_url", ""),
+        version=tag.lstrip("vV"), url=asset.get("url") or asset["browser_download_url"],
+        size=int(asset.get("size") or 0), sha256=m.group(1).lower() if m else "", notes=_clean_notes(body),
+        page=data.get("html_url", ""), alt_url=asset.get("browser_download_url", ""),
     )
 
 
@@ -99,10 +101,27 @@ def download(info: UpdateInfo, progress: Callable[[int, int], None] | None = Non
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"MedQuiz_Kurulum_{info.version}.exe"
     part = dest.with_suffix(".part")
+    urls = [u for u in (info.url, info.alt_url) if u]
+    last: UpdateError | None = None
+    for url in urls:
+        try:
+            return _download_one(url, info, dest, part, progress, should_stop, get)
+        except UpdateError as e:
+            last = e
+            if "iptal" in str(e) or "SHA-256" in str(e):
+                raise
+            log.warning("İndirme %s başarısız: %s", url, e)
+    raise last or UpdateError("İndirme başarısız.")
+
+
+def _download_one(url, info, dest, part, progress, should_stop, get) -> Path:
     h = hashlib.sha256()
     done = 0
+    headers = {"User-Agent": UA["User-Agent"]}
+    if "api.github.com" in url:
+        headers["Accept"] = "application/octet-stream"      # API varlık adresi → dosyanın kendisi
     try:
-        with get(info.url, headers={"User-Agent": UA["User-Agent"]}, stream=True, timeout=30) as r:
+        with get(url, headers=headers, stream=True, timeout=30) as r:
             if r.status_code != 200:
                 raise UpdateError(f"İndirme başarısız (HTTP {r.status_code}).")
             total = int(r.headers.get("content-length") or info.size or 0)
