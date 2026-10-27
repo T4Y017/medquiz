@@ -129,6 +129,8 @@ class QuizPage(QWidget):
         self.start_btn.setObjectName("primary")
         self.start_btn.clicked.connect(self.start)
         self.review_btn = QPushButton("Yanlışlarımı tekrar et")
+        self.review_btn.setToolTip("Yanlış yaptığın soruların konularından YENİ sorular üretir:\n"
+                                   "5 çoktan seçmeli + 5 eşleştirme. Aynı sorular tekrar sorulmaz.")
         self.review_btn.clicked.connect(self.start_review)
 
         def lab(s):
@@ -257,6 +259,36 @@ class QuizPage(QWidget):
         obl.addLayout(r)
         cl.addWidget(self.open_box)
 
+        # eşleştirme: her sol öğe için açılır listeden sağ sütundaki eşini seç
+        self.match_box = QWidget()
+        mbl = QVBoxLayout(self.match_box)
+        mbl.setContentsMargins(0, 0, 0, 0)
+        mhint = QLabel("Her öğenin karşısındaki listeden doğru eşini seçin.")
+        mhint.setObjectName("muted")
+        mbl.addWidget(mhint)
+        self.match_opts_lbl = QLabel("")
+        self.match_opts_lbl.setWordWrap(True)
+        self.match_opts_lbl.setTextFormat(Qt.RichText)
+        self.match_opts_lbl.setStyleSheet("background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:8px 12px;")
+        mbl.addWidget(self.match_opts_lbl)
+        self.match_grid = QGridLayout()
+        self.match_grid.setHorizontalSpacing(12)
+        self.match_grid.setVerticalSpacing(8)
+        self.match_grid.setColumnStretch(1, 1)
+        mbl.addLayout(self.match_grid)
+        mr = QHBoxLayout()
+        mr.addStretch()
+        self.match_reveal_btn = QPushButton("Cevabı göster")
+        self.match_reveal_btn.clicked.connect(self.reveal_match)
+        self.match_btn = QPushButton("Eşleştirmeyi kontrol et")
+        self.match_btn.setObjectName("primary")
+        self.match_btn.clicked.connect(self.answer_match)
+        mr.addWidget(self.match_reveal_btn)
+        mr.addWidget(self.match_btn)
+        mbl.addLayout(mr)
+        cl.addWidget(self.match_box)
+        self.match_combos: list[QComboBox] = []
+
         self.fb = QFrame()
         fbl = QVBoxLayout(self.fb)
         fbl.setContentsMargins(16, 12, 16, 12)
@@ -376,8 +408,15 @@ class QuizPage(QWidget):
         parts = [q["question"]]
         if q["type"] == "mcq":
             parts += [f"{LETTERS[i]}) {o}" for i, o in enumerate(q["options"])]
+        elif q["type"] == "match":
+            parts += [f"{i + 1}. {p['left']}" for i, p in enumerate(q["pairs"])]
+            parts += [f"{LETTERS[i]}) {o}" for i, o in enumerate(q["options"])]
         res = self.results.get(self.idx)
-        if res is not None:
+        if res is not None and q["type"] == "match":
+            parts.append("\nCorrect matches:\n" + "\n".join(f"{p['left']} → {p['right']}" for p in q["pairs"]))
+            if q.get("explanation"):
+                parts.append(q["explanation"])
+        elif res is not None:
             if q["type"] == "mcq":
                 parts.append(f"\nCorrect answer: {LETTERS[q['answer_index']]}")
                 if q.get("explanation"):
@@ -473,24 +512,49 @@ class QuizPage(QWidget):
         self._render_nav()
 
     def start_review(self):
-        rows = self.ctx.db.wrong_questions(limit=self.count_sp.value(), profile=self.ctx.profile or None)
+        """Yanlış yapılan konulardan YENİ sorular: 5 çoktan seçmeli + 5 eşleştirme."""
+        rows = self.ctx.db.wrong_questions(limit=20, profile=self.ctx.profile or None)
         if not rows:
             QMessageBox.information(self, "Harika!", "Tekrar edilecek yanlış/düşük puanlı soru yok.")
             return
+        if not self.ctx.settings.has_any_key:
+            QMessageBox.warning(self, "API anahtarı gerekli", "Lütfen önce Ayarlar sekmesinden API anahtarınızı girin.")
+            return
         self.stop_generation(silent=True)
-        qs = []
-        for r in rows:
-            try:
-                q = json.loads(r["payload"])
-            except json.JSONDecodeError:
-                continue
-            q["id"] = r["id"]
-            qs.append(q)
         self.review_mode = True
         self.req = None
-        self.questions, self.results, self.idx = qs, {}, -1
-        self.status.setText(f"Tekrar modu: {len(qs)} soru")
-        self.go(0)
+        self.questions, self.results, self.idx = [], {}, -1
+        self._render()
+        self.gen_token += 1
+        token = self.gen_token
+        engine, profile = self.ctx.engine, self.ctx.profile
+        diff, lang = self.diff_cb.currentText(), self.lang_cb.currentData()
+
+        def job(progress, task):
+            return engine.generate_review(profile=profile, n_mcq=5, n_match=5, difficulty=diff, language=lang)
+
+        def done(res, t=token):
+            if t != self.gen_token:
+                return
+            self.task = None
+            self.questions, self.results, self.idx = res["questions"], {}, -1
+            topics = ", ".join(res["topics"][:6]) or "çeşitli"
+            self._set_busy(False, f"Tekrar: {len(self.questions)} yeni soru · {res['reviewed']} yanlış soru "
+                                  f"ele alındı · konular: {topics}")
+            self.go(0)
+
+        def fail(e, t=token):
+            if t != self.gen_token:
+                return
+            self.task = None
+            self._set_busy(False, "")
+            self.review_mode = False
+            self._render()
+            QMessageBox.warning(self, "Tekrar quizi hazırlanamadı", e)
+
+        self._set_busy(True, f"Yanlış yaptığın {len(rows)} sorunun konularından 5 test + 5 eşleştirme sorusu "
+                             "hazırlanıyor…")
+        self.task = self.ctx.runner.start(job, on_result=done, on_error=fail)
 
     # ======================================================= answering
     def answer_mcq(self, i: int):
@@ -500,6 +564,29 @@ class QuizPage(QWidget):
         ok = i == q["answer_index"]
         self.results[self.idx] = {"answer": i, "score": 1.0 if ok else 0.0}
         self.ctx.engine.record(q, q["options"][i], 1.0 if ok else 0.0)
+        self._render()
+
+    def answer_match(self):
+        q = self.current()
+        if not q or q["type"] != "match" or self.idx in self.results:
+            return
+        chosen = [cb.currentIndex() - 1 if cb.currentIndex() > 0 else None for cb in self.match_combos]
+        if any(c is None for c in chosen):
+            if QMessageBox.question(self, "Boş eşleştirme", "Bazı öğeleri eşleştirmediniz. Yine de kontrol edilsin mi?") \
+                    != QMessageBox.Yes:
+                return
+        score = self.ctx.engine.score_match(q, chosen)
+        self.results[self.idx] = {"answer": chosen, "score": score}
+        self.ctx.engine.record(q, json.dumps(chosen), score)
+        self._render()
+
+    def reveal_match(self):
+        q = self.current()
+        if not q or q["type"] != "match" or self.idx in self.results:
+            return
+        n = len(q["pairs"])
+        self.results[self.idx] = {"answer": [None] * n, "score": 0.0, "revealed": True}
+        self.ctx.engine.record(q, "[]", 0.0)
         self._render()
 
     def grade_open(self):
@@ -603,6 +690,7 @@ class QuizPage(QWidget):
         self.fb.hide()
         self.opts_box.hide()
         self.open_box.hide()
+        self.match_box.hide()
         if q is None:
             self._show_widgets(False)
             if self.task:
@@ -618,10 +706,10 @@ class QuizPage(QWidget):
             return
 
         self._show_widgets(True)
-        self.badge_type.setText("Çoktan seçmeli" if q["type"] == "mcq" else "Klasik")
+        self.badge_type.setText({"mcq": "Çoktan seçmeli", "match": "Eşleştirme"}.get(q["type"], "Klasik"))
         self.badge_topic.setText(q.get("topic") or "Genel")
         self.badge_topic.setVisible(bool(q.get("topic")))
-        diff = self.req.difficulty if self.req else "Tekrar"
+        diff = self.req.difficulty if self.req else ("Tekrar" if self.review_mode else "")
         self.badge_diff.setText(diff)
         self.q_lbl.setText(q["question"])
         res = self.results.get(self.idx)
@@ -648,6 +736,8 @@ class QuizPage(QWidget):
                     b.hide()
             if res is not None:
                 self._render_mcq_feedback(q, res)
+        elif q["type"] == "match":
+            self._render_match(q, res)
         else:
             self.open_box.show()
             answered = res is not None
@@ -660,6 +750,65 @@ class QuizPage(QWidget):
             if answered:
                 self._render_open_feedback(q, res)
         self._render_nav()
+
+    def _render_match(self, q: dict, res: dict | None):
+        self.match_box.show()
+        while self.match_grid.count():
+            it = self.match_grid.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        self.match_combos = []
+        key = q["answer_map"]
+        for i, p in enumerate(q["pairs"]):
+            left = QLabel(f"<b>{i + 1}.</b> {esc(p['left'])}")
+            left.setWordWrap(True)
+            left.setMinimumWidth(180)
+            cb = QComboBox()
+            cb.addItem("— eşini seçin —")
+            for j, o in enumerate(q["options"]):
+                cb.addItem(f"{LETTERS[j]})  {o}")
+            mark = QLabel("")
+            if res is not None:
+                c = res["answer"][i] if i < len(res["answer"]) else None
+                cb.setCurrentIndex(c + 1 if c is not None else 0)
+                cb.setEnabled(False)
+                if c == key[i]:
+                    mark.setText(f"<span style='color:{style.OK}; font-weight:600'>✓</span>")
+                else:
+                    mark.setText(f"<span style='color:{style.BAD}; font-weight:600'>✗ doğrusu: "
+                                 f"{LETTERS[key[i]]}) {esc(q['options'][key[i]])}</span>")
+                mark.setWordWrap(True)
+            self.match_grid.addWidget(left, i, 0)
+            self.match_grid.addWidget(cb, i, 1)
+            self.match_grid.addWidget(mark, i, 2)
+            self.match_combos.append(cb)
+        self.match_grid.setColumnStretch(2, 1 if res is not None else 0)
+        self.match_opts_lbl.setText("<b>Seçenekler:</b> " + " &nbsp;·&nbsp; ".join(
+            f"<b>{LETTERS[j]})</b> {esc(o)}" for j, o in enumerate(q["options"])))
+        self.match_opts_lbl.setVisible(res is None)
+        answered = res is not None
+        self.match_btn.setVisible(not answered)
+        self.match_reveal_btn.setVisible(not answered)
+        if answered:
+            n = len(key)
+            right = round(res["score"] * n)
+            if res.get("revealed"):
+                self.fb.setObjectName("feedbackMid")
+                head = "<h3>Doğru eşleştirmeler</h3>"
+            else:
+                self.fb.setObjectName("feedbackOk" if res["score"] >= 1 else "feedbackMid" if res["score"] >= 0.6
+                                      else "feedbackBad")
+                color = style.OK if res["score"] >= 1 else "#a16207" if res["score"] >= 0.6 else style.BAD
+                head = f"<h3 style='color:{color}'>{right} / {n} doğru eşleştirme</h3>"
+            self.fb.style().unpolish(self.fb)
+            self.fb.style().polish(self.fb)
+            pairs = "".join(f"<li><b>{esc(p['left'])}</b> → {esc(p['right'])}</li>" for p in q["pairs"])
+            body = f"<ul>{pairs}</ul>"
+            if q.get("explanation"):
+                body += f"<p>{esc(q['explanation'])}</p>"
+            self.fb_lbl.setText(head + body + self._src_line(q))
+            self._set_sources(q)
+            self.fb.show()
 
     def _set_sources(self, q: dict):
         srcs = q.get("sources") or []

@@ -108,7 +108,14 @@ class Database:
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Eski veritabanlarına yeni sütunları ekler (veri kaybı olmadan)."""
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(questions)").fetchall()}
+        if "reviewed_at" not in cols:
+            self.conn.execute("ALTER TABLE questions ADD COLUMN reviewed_at REAL")
 
     # ------------------------------------------------------------ documents
     def add_document(self, title: str, source: str, kind: str, chunks: list[dict], topic: str = "") -> int:
@@ -281,7 +288,8 @@ class Database:
     def wrong_questions(self, limit: int = 20, profile: str | None = None) -> list[dict]:
         """Yanlış/düşük puanlı sorular — tekrar modu için."""
         with self._lock:
-            sql = "SELECT id, qtype, topic, difficulty, payload, chunk_ids FROM questions WHERE score IS NOT NULL AND score < 0.6"
+            sql = ("SELECT id, qtype, topic, difficulty, payload, chunk_ids FROM questions "
+                   "WHERE score IS NOT NULL AND score < 0.6 AND reviewed_at IS NULL")
             params: tuple = ()
             if profile:
                 sql += " AND profile = ?"
@@ -289,6 +297,13 @@ class Database:
             sql += " ORDER BY answered_at DESC LIMIT ?"
             rows = self.conn.execute(sql, params + (limit,)).fetchall()
         return [dict(r) for r in rows]
+
+    def mark_reviewed(self, ids: list[int]) -> None:
+        if not ids:
+            return
+        with self._lock:
+            self.conn.executemany("UPDATE questions SET reviewed_at = ? WHERE id = ?", [(time.time(), i) for i in ids])
+            self.conn.commit()
 
     def profiles(self) -> list[str]:
         with self._lock:

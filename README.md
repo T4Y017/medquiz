@@ -22,7 +22,9 @@ sistemi çalışır.
 | 📝 **Quiz** | Çoktan seçmeli (5 şık), klasik veya karışık · Kolay / Orta / Zor / Klinik vaka · konu odaklı ya da tüm kütüphaneden |
 | ♾️ **Sürekli mod** | Sorular bittikçe arka planda yenileri üretilir, daha önce sorulanlar tekrarlanmaz |
 | ✍️ **Klasik cevap puanlama** | 0–100 puan, doğru değinilen / eksik / hatalı noktalar, örnek cevap |
-| 🔁 **Yanlışları tekrar et** | %60 altı sorular tekrar sorulur; doğru yapınca listeden çıkar |
+| 🔁 **Yanlışları tekrar et** | Yanlış yaptığın soruların konularından **yeni** sorular: 5 çoktan seçmeli + 5 eşleştirme (aynı sorular tekrar sorulmaz) |
+| 🔗 **Eşleştirme** | Sol sütundaki öğeleri sağdakilerle eşleştir (ör. ilaç ↔ yan etki); kısmi puan |
+| ✅ **Esnek klasik puanlama** | Kısa ama özü doğru cevap tam puan alabilir; birebir örnek cevap aranmaz, eş anlamlı ve kısaltmalar kabul edilir |
 | 📖 **Kaynak gösterme** | Her sorunun hangi belgeden (ve PDF'te hangi sayfadan) geldiği, kaynak metniyle birlikte |
 | 🗂 **Sohbet geçmişi** | Sohbetler otomatik kaydedilir (kişiye göre ayrı); soldan eski sohbete dönüp kaldığın yerden devam edersin |
 | 💬 **Sohbet** | Kütüphanedeki kaynaklara dayanan, [K1] [K2] atıflı soru-cevap |

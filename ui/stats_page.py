@@ -117,7 +117,7 @@ class StatsPage(QWidget):
             except json.JSONDecodeError:
                 q = ""
             self.t_recent.setItem(r, 0, QTableWidgetItem(q[:140]))
-            self.t_recent.setItem(r, 1, QTableWidgetItem("ÇS" if row["qtype"] == "mcq" else "Klasik"))
+            self.t_recent.setItem(r, 1, QTableWidgetItem({"mcq": "ÇS", "match": "Eşleştirme"}.get(row["qtype"], "Klasik")))
             it = QTableWidgetItem(f"%{row['score'] * 100:.0f}")
             it.setForeground(self._color(row["score"]))
             self.t_recent.setItem(r, 2, it)

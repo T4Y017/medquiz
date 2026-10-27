@@ -235,9 +235,32 @@ def run(pdf: str | None, out: str) -> int:
             return {"en_question": q[:120], "english_like": round(ascii_ratio, 2), "translation": t[:120],
                     "term": d["term"], "meaning": d["meaning"], "ipa": d["ipa"], "cached": tr.cached(q) is not None}
 
+        def review_and_short_answer(qe=qe):
+            # 2 yanlış cevap kaydı oluştur → tekrar quizi: 5 test + 5 eşleştirme
+            qs = qe.generate(GenRequest(qtype="mcq", count=2, difficulty="Orta", topic="diyabetik ketoasidoz"))
+            for q in qs:
+                qe.record(q, "x", 0.0)
+            res = qe.generate_review(profile="", n_mcq=5, n_match=5)
+            types = [q["type"] for q in res["questions"]]
+            m = next((q for q in res["questions"] if q["type"] == "match"), None)
+            # kısa ama doğru klasik cevap esnek puanlanmalı
+            g = qe.grade_open({"question": "Diyabetik ketoasidozda insülin başlamadan önce neye bakılır, neden?",
+                               "key_points": ["Serum potasyum düzeyi", "K < 3.3 mEq/L ise önce replasman",
+                                              "İnsülin potasyumu hücre içine sokar; hipokalemi/aritmi riski"],
+                               "model_answer": "İnsülin başlamadan önce serum potasyumu ölçülmelidir. K < 3.3 mEq/L ise "
+                                               "insülin ertelenir ve potasyum replasmanı yapılır, çünkü insülin "
+                                               "potasyumu hücre içine sokarak ciddi hipokalemi ve aritmiye yol açabilir."},
+                              "Potasyum. 3.3 altıysa önce K ver, insülin K'yı hücre içine sokar.")
+            if g["score"] < 75:
+                raise RuntimeError(f"Kısa doğru cevaba düşük puan: {g['score']} — {g.get('feedback', '')[:150]}")
+            return {"review_types": {t: types.count(t) for t in set(types)}, "topics": res["topics"][:3],
+                    "match_pairs": len(m["pairs"]) if m else 0, "short_answer_score": g["score"],
+                    "feedback": g.get("feedback", "")[:120]}
+
         # Gerçek kullanım gibi adımlar arasında kısa ara (ücretsiz katmanın dakikalık sınırı)
         steps = [(f"{prov}: Ayarlar > Test düğmesi", settings_test), (f"{prov}: quiz üretimi", quiz),
-                         (f"{prov}: İngilizce soru + çeviri + kelime tanımı", english_and_translate), (f"{prov}: klasik cevap puanlama", grade),
+                         (f"{prov}: İngilizce soru + çeviri + kelime tanımı", english_and_translate),
+                         (f"{prov}: tekrar quizi (5 test + 5 eşleştirme) + kısa cevap puanı", review_and_short_answer), (f"{prov}: klasik cevap puanlama", grade),
                          (f"{prov}: vaka üretimi (paraklinik + test)", case),
                          (f"{prov}: sohbet (akış + takip sorusu)", chat), (f"{prov}: vaka sohbeti", case_chat)]
         if prov == "gemini":

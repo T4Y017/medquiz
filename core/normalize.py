@@ -17,6 +17,8 @@ _TYPE_MAP = {
     "open": "open", "openended": "open", "open_ended": "open", "essay": "open", "classic": "open", "klasik": "open",
     "shortanswer": "open", "short_answer": "open", "longanswer": "open", "long_answer": "open", "free": "open",
     "freetext": "open", "free_text": "open", "written": "open",
+    "match": "match", "matching": "match", "eslestirme": "match", "eşleştirme": "match", "pairs": "match",
+    "matchingpairs": "match", "matching_pairs": "match",
     "multi": "multi", "multiselect": "multi", "multi_select": "multi", "multipleselect": "multi",
     "multiple_select": "multi", "multipleanswer": "multi", "multiple_answer": "multi", "checkbox": "multi",
     "coklusecim": "multi", "çokluseçim": "multi", "selectall": "multi", "select_all": "multi",
@@ -191,3 +193,33 @@ def items(data, *keys) -> list:
                 if inner:
                     return inner
     return []
+
+
+def pairs(q: dict) -> list[tuple[str, str]]:
+    """Eşleştirme çiftlerini farklı biçimlerden okur: [{left,right}], {sol: sağ}, ya da paralel listeler."""
+    raw = first(q, "pairs", "matches", "matching", "eslestirmeler", "items")
+    out: list[tuple[str, str]] = []
+    if isinstance(raw, dict):
+        out = [(text(k), text(v)) for k, v in raw.items()]
+    elif isinstance(raw, list):
+        for it in raw:
+            if isinstance(it, dict):
+                l = text(first(it, "left", "term", "item", "sol", "a", "question", "key"))
+                r = text(first(it, "right", "match", "definition", "sag", "sağ", "b", "answer", "value"))
+                out.append((l, r))
+            elif isinstance(it, (list, tuple)) and len(it) >= 2:
+                out.append((text(it[0]), text(it[1])))
+    if not out:
+        lefts = first(q, "left", "left_items", "terms", "sol")
+        rights = first(q, "right", "right_items", "definitions", "sag")
+        if isinstance(lefts, list) and isinstance(rights, list) and len(lefts) == len(rights):
+            out = [(text(a), text(b)) for a, b in zip(lefts, rights)]
+    out = [(clean_option(l), clean_option(r)) for l, r in out if text(l) and text(r)]
+    seen_l, seen_r, uniq = set(), set(), []
+    for l, r in out:
+        if l.lower() in seen_l or r.lower() in seen_r:
+            continue
+        seen_l.add(l.lower())
+        seen_r.add(r.lower())
+        uniq.append((l, r))
+    return uniq[:6]

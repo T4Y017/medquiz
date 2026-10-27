@@ -73,13 +73,27 @@ LANG_RULE = {
            "'topic' alanını Türkçe bırak."),
 }
 
-SYSTEM_GRADE = """Sen adil ve titiz bir tıp eğitimcisisin. Öğrencinin klasik (uzun cevaplı) sınav cevabını,
-verilen anahtar noktalar, örnek cevap ve kaynak metne göre değerlendir.
-- Anlamca doğru olan farklı ifadeleri kabul et; yazım hatalarını puandan düşme.
+MATCH_SPEC = """Eşleştirme sorusu biçimi:
+{"type": "match", "topic": "kısa konu", "question": "Aşağıdaki ... ile ... eşleştiriniz.",
+ "pairs": [{"left": "sol öğe", "right": "doğru eşi"}, ... 4-5 çift],
+ "explanation": "her eşleşmenin kısa gerekçesi", "source_keys": ["K1"]}
+Kurallar: sol öğeler aynı kategoriden olsun (ör. ilaçlar), sağdakiler de (ör. yan etkiler); her sağ öğe yalnızca
+bir sol öğeyle eşleşsin; sağ öğeler birbirine yakın/karıştırılabilir olsun ki gerçekten bilgi ölçsün."""
+
+SYSTEM_GRADE = """Sen adil, anlayışlı bir tıp eğitimcisisin. Öğrencinin klasik sınav cevabını KAVRAMSAL olarak
+değerlendir: soruyu anlayıp özünü doğru verdi mi? Örnek cevap yalnızca bir referanstır, kalıp değildir.
+- Kısa, öz ve doğru bir cevap TAM PUAN alabilir. Uzunluk, ayrıntı, cümle yapısı, sıralama ya da örnek cevapla
+  aynı ifadeleri kullanmak ARANMAZ. Madde madde, kısaltmalı (MI, KKY, DKA), anahtar kelimeyle verilen cevap geçerlidir.
+- Eş anlamlı terimleri, Türkçe/İngilizce karşılıkları ve günlük dilde anlatımı kabul et; yazım hatalarını puandan düşme.
+- Anahtar noktaları ikiye ayır: (a) sorunun doğrudan istediği TEMEL noktalar, (b) tamamlayıcı ayrıntılar.
+  Temel noktalar doğruysa puan en az 75 olmalı; tamamlayıcı ayrıntıların eksikliği toplamda en fazla 25 puan düşürür.
+  Eksik tamamlayıcıları "missing" listesinde bilgi amaçlı göster ama cezayı hafif tut.
+- Puanı yalnızca şunlar ciddi biçimde düşürür: temel noktanın eksik olması, tıbben YANLIŞ bilgi, soruyla ilgisiz cevap.
 - Soru İngilizce olabilir; öğrenci Türkçe ya da İngilizce cevap verebilir — dil farkı puanı etkilemez.
-  Geri bildirimi (feedback, covered, missing, errors) her zaman TÜRKÇE yaz.
-- Tıbben yanlış ya da tehlikeli ifadeleri açıkça belirt.
-- 0-100 arası puan ver: anahtar noktaların kapsanma oranı esas, yanlış bilgi puan düşürür.
+  Geri bildirimi (feedback, covered, missing, errors) her zaman TÜRKÇE yaz; önce doğru yapılanı söyle.
+- Tıbben yanlış ya da tehlikeli ifadeleri "errors" içinde açıkça düzelt.
+- Puan bantları: 90-100 öz ve doğru; 75-89 temel doğru, küçük eksik; 50-74 temelin bir kısmı eksik;
+  20-49 büyük ölçüde eksik/yanlış; 0-19 ilgisiz ya da tamamen yanlış.
 YALNIZCA şu JSON'u döndür:
 {"score": 0-100, "covered": ["kapsanan nokta"], "missing": ["eksik nokta"],
  "errors": ["yanlış ifade ve düzeltmesi"], "feedback": "kısa, yapıcı geri bildirim"}"""
@@ -224,7 +238,8 @@ class QuizEngine:
         if not text:
             return None
         raw_opts = nz.first(q, "options", "choices", "secenekler", "şıklar", "siklar")
-        qtype = nz.norm_type(q.get("type"), default="mcq" if raw_opts else "open")
+        has_pairs = bool(nz.first(q, "pairs", "matches", "matching"))
+        qtype = nz.norm_type(q.get("type"), default="match" if has_pairs else "mcq" if raw_opts else "open")
         if qtype == "multi":
             qtype = "mcq"
         keys_raw = nz.first(q, "source_keys", "sources", "source", "kaynak", default=[])
@@ -240,6 +255,21 @@ class QuizEngine:
             "sources": [source_label(c) for c in src_chunks],
             "source_texts": [c["text"] for c in src_chunks],
         }
+        if qtype == "match":
+            pr = nz.pairs(q)
+            if len(pr) < 3:
+                return None
+            rights = [r for _, r in pr]
+            order = list(range(len(rights)))
+            self.rng.shuffle(order)
+            options = [rights[i] for i in order]
+            base.update(
+                pairs=[{"left": l, "right": r} for l, r in pr],
+                options=options,                                   # sağ sütun (karışık)
+                answer_map=[options.index(r) for _, r in pr],      # her sol öğe için doğru seçeneğin indeksi
+                explanation=nz.text(nz.first(q, "explanation", "rationale", "aciklama", "açıklama")),
+            )
+            return base
         if qtype == "mcq":
             opts, flagged = nz.options_with_flags(raw_opts)
             ans = nz.mcq_answer(q, opts, flagged)
@@ -261,6 +291,93 @@ class QuizEngine:
             if not base["model_answer"]:
                 return None
         return base
+
+    @staticmethod
+    def score_match(q: dict, chosen: list[int | None]) -> float:
+        key = q["answer_map"]
+        right = sum(1 for i, c in enumerate(chosen) if i < len(key) and c == key[i])
+        return right / max(1, len(key))
+
+    # --------------------------------------------------------------- review
+    def generate_review(self, profile: str = "", n_mcq: int = 5, n_match: int = 5, difficulty: str = "Orta",
+                        language: str = "tr", on_batch: Callable[[list[dict]], None] | None = None,
+                        limit: int = 20) -> dict:
+        """Yanlış yapılan sorulardan konu ve kaynakları çıkarır; aynı soruları değil, aynı kavramları farklı
+        açılardan soran YENİ sorular üretir (varsayılan 5 çoktan seçmeli + 5 eşleştirme)."""
+        rows = self.db.wrong_questions(limit=limit, profile=profile or None)
+        if not rows:
+            return {"questions": [], "topics": [], "reviewed": 0}
+        wrong, chunk_ids, topics = [], [], []
+        for r in rows:
+            try:
+                q = json.loads(r["payload"])
+            except json.JSONDecodeError:
+                continue
+            wrong.append(q)
+            for cid in json.loads(r.get("chunk_ids") or "[]"):
+                if cid not in chunk_ids:
+                    chunk_ids.append(cid)
+            t = (q.get("topic") or r.get("topic") or "").strip()
+            if t and t not in topics:
+                topics.append(t)
+        ctx = self.db.get_chunks(chunk_ids[:8])
+        if len(ctx) < 3 and topics:                       # kaynak silinmiş olabilir: konudan ara
+            seen = {c["id"] for c in ctx}
+            for c in self.retriever.search(" ".join(topics[:5]), k=6):
+                if c["id"] not in seen:
+                    ctx.append(c)
+                    seen.add(c["id"])
+        context, keymap = format_context(ctx[:8]) if ctx else ("(Kaynak metin bulunamadı; genel tıp bilgisi kullan.)", {})
+        mistakes = []
+        for q in wrong[:12]:
+            line = f"- [{q.get('topic', '')}] {q.get('question', '')[:220]}"
+            if q.get("type") == "mcq" and q.get("options"):
+                line += f" (doğru: {q['options'][q['answer_index']][:80]})"
+            mistakes.append(line)
+        llm = make_llm(self.llm_factory, "heavy")
+        out: list[dict] = []
+        need = {"mcq": n_mcq, "match": n_match}
+        for _round in range(2):
+            want = {k: v - sum(1 for q in out if q["type"] == k) for k, v in need.items()}
+            if all(v <= 0 for v in want.values()):
+                break
+            parts = []
+            if want["mcq"] > 0:
+                parts.append(f'{want["mcq"]} adet çoktan seçmeli (type="mcq", 5 şık, tek doğru)')
+            if want["match"] > 0:
+                parts.append(f'{want["match"]} adet eşleştirme (type="match", her biri 4-5 çift)')
+            user = (
+                f"KAYNAK METİNLER:\n\n{context}\n\n=====\n\n"
+                "ÖĞRENCİNİN YANLIŞ YAPTIĞI SORULAR (bunları TEKRAR SORMA; aynı kavramlardaki eksiği kapatacak, "
+                "kavramı farklı açılardan yoklayan YENİ sorular yaz):\n" + "\n".join(mistakes) + "\n\n"
+                f"Zayıf konular: {', '.join(topics[:10]) or '(belirtilmemiş)'}\n"
+                f"Zorluk: {difficulty} — {DIFFICULTIES.get(difficulty, '')}\n"
+                f"Toplam: {' ve '.join(parts)}.\n"
+                f"{LANG_RULE.get(language, '')}\n\n{JSON_SPEC}\n{MATCH_SPEC}"
+            )
+            data = llm.complete_json(SYSTEM_QUIZ, user, max_tokens=10000, temperature=0.7)
+            batch = []
+            for q in nz.items(data, "questions", "items", "sorular", "quiz"):
+                norm = self._normalize(q, keymap, ctx) if isinstance(q, dict) else None
+                if not norm or norm["type"] not in want or want[norm["type"]] <= 0:
+                    continue
+                want[norm["type"]] -= 1
+                norm["model"] = getattr(llm, "label", "")
+                norm["review"] = True
+                norm["id"] = self.db.save_question(norm["type"], norm.get("topic", ""), difficulty, norm,
+                                                   norm["chunk_ids"], profile)
+                batch.append(norm)
+            if not batch:
+                log.warning("Tekrar quizi: kullanılabilir soru yok: %s", json.dumps(data, ensure_ascii=False)[:2000])
+            out.extend(batch)
+            if on_batch and batch:
+                on_batch(batch)
+        if not out:
+            raise LLMError("Yanlış konulardan yeni soru üretilemedi. Lütfen tekrar deneyin.")
+        # mcq'lar önce, sonra eşleştirmeler
+        out.sort(key=lambda q: 0 if q["type"] == "mcq" else 1)
+        self.db.mark_reviewed([r["id"] for r in rows])
+        return {"questions": out, "topics": topics, "reviewed": len(rows)}
 
     # ------------------------------------------------------------- grading
     def grade_open(self, q: dict, answer: str) -> dict:
