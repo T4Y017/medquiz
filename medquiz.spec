@@ -16,6 +16,15 @@ try:
 except ImportError:
     pass
 
+# Hızlı PDF okuyucu (pdfium). Yoksa pypdf'e düşülür.
+try:
+    import pypdfium2  # noqa: F401
+    datas += collect_data_files("pypdfium2") + collect_data_files("pypdfium2_raw")
+    binaries += collect_dynamic_libs("pypdfium2_raw")
+    hiddenimports += ["pypdfium2", "pypdfium2_raw"]
+except ImportError:
+    pass
+
 hiddenimports += collect_submodules("anthropic") + collect_submodules("openai")
 datas += collect_data_files("docx")
 

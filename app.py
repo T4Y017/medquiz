@@ -6,6 +6,11 @@ import os
 import sys
 from pathlib import Path
 
+# Konsolsuz (pencereli) exe'de stdout/stderr yoktur; ilerleme çubuğu yazan kütüphaneler çökmesin
+for _name in ("stdout", "stderr"):
+    if getattr(sys, _name) is None:
+        setattr(sys, _name, open(os.devnull, "w", encoding="utf-8"))
+
 # PyInstaller ile paketlendiğinde de modüller bulunabilsin
 BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -27,7 +32,7 @@ from ui.quiz_page import QuizPage  # noqa: E402
 from ui.settings_page import SettingsPage  # noqa: E402
 from ui.stats_page import StatsPage  # noqa: E402
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 
 class MainWindow(QMainWindow):
@@ -161,7 +166,22 @@ class MainWindow(QMainWindow):
         super().closeEvent(e)
 
 
+def _selftest(argv: list[str]) -> int:
+    import argparse
+
+    from core.selftest import run
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--selftest", action="store_true")
+    ap.add_argument("--pdf", default=None)
+    ap.add_argument("--out", default="selftest.json")
+    a, _ = ap.parse_known_args(argv)
+    return run(a.pdf, a.out)
+
+
 def main() -> int:
+    if "--selftest" in sys.argv:
+        return _selftest(sys.argv[1:])
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",

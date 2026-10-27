@@ -55,18 +55,43 @@ class AppContext(QObject):
         self.warmup_index()
 
     def warmup_index(self) -> None:
-        """İndeksi ve eksik embedding'leri arka planda hazırlar."""
-        def job(progress, task):
-            progress("Arama dizini hazırlanıyor… (ilk seferde anlamsal arama modeli indirilebilir)")
-            self.retriever.warmup()
-            if self.embedder and self.embedder.error:
-                return f"Anahtar kelime araması aktif (anlamsal model yüklenemedi)"
-            if self.retriever.semantic_enabled:
-                return f"Hibrit arama aktif · {self.retriever.size} parça"
-            return f"Anahtar kelime araması aktif · {self.retriever.size} parça"
+        """Anahtar kelime dizinini hemen kurar; anlamsal vektörleri arka planda parça parça hesaplar.
+        Bu sırada quiz/vaka/sohbet beklemeden çalışır."""
+        retriever = self.retriever
 
-        self.runner.start(job, on_result=self.index_status.emit, on_progress=self.index_status.emit,
-                          on_error=lambda e: self.index_status.emit(f"Dizin hatası: {e}"))
+        def job(progress, task):
+            retriever.warmup()
+            n = retriever.size
+            progress(f"Anahtar kelime araması hazır · {n} parça")
+            if not self.embedder:
+                return f"Anahtar kelime araması aktif · {n} parça"
+            if not self.embedder.ready:
+                progress(f"Anahtar kelime araması hazır · {n} parça · anlamsal arama modeli yükleniyor "
+                         "(ilk seferde ~220 MB indirilir)…")
+
+            def on_prog(p):
+                done, total = p
+                if total and done < total:
+                    progress(f"Arama hazır · anlamsal dizin arka planda hazırlanıyor: {done}/{total} parça "
+                             f"(%{done * 100 // total})")
+
+            state = retriever.embed_missing(progress=on_prog, should_stop=lambda: task.cancelled)
+            if state == "busy":
+                return None
+            if state == "failed" or (self.embedder and self.embedder.error):
+                return f"Anahtar kelime araması aktif · {n} parça (anlamsal model yüklenemedi)"
+            if state == "stopped":
+                return None
+            return f"Hibrit arama aktif · {n} parça"
+
+        def done(msg):
+            if msg:
+                self.index_status.emit(msg)
+
+        if getattr(self, "_index_task", None):
+            self._index_task.cancel()
+        self._index_task = self.runner.start(job, on_result=done, on_progress=self.index_status.emit,
+                                             on_error=lambda e: self.index_status.emit(f"Dizin hatası: {e}"))
 
     def set_profile(self, name: str) -> None:
         self.profile = name.strip()

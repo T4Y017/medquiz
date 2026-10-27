@@ -11,7 +11,7 @@ from PySide6.QtGui import QPageLayout, QPageSize, QPdfWriter, QTextDocument
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QRadioButton, QSplitter,
-    QStackedWidget, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget,
+    QSpinBox, QStackedWidget, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget,
 )
 
 from core.case import LEVELS, CaseEngine, CaseRequest
@@ -43,12 +43,113 @@ def _src_line(sources: list[dict]) -> str:
     return f"<p style='color:{style.MUTED}; font-size:small'>📖 Kaynak: {esc('; '.join(labels))}</p>"
 
 
+_NUM = re.compile(r"^[<>≤≥]?\s*(-?\d+(?:[.,]\d+)?)")
+
+
+def _auto_flag(f: dict) -> str:
+    """Bayrak verilmemişse sonuç ile referans aralığını karşılaştırarak H/L çıkarır."""
+    if f.get("flag"):
+        return f["flag"]
+    m = _NUM.match(str(f.get("result", "")).strip())
+    ref = str(f.get("ref", "")).replace(",", ".")
+    if not m or not ref:
+        return ""
+    v = float(m.group(1).replace(",", "."))
+    r = re.match(r"^\s*(-?\d+(?:\.\d+)?)\s*[-–]\s*(-?\d+(?:\.\d+)?)", ref)
+    if r:
+        lo, hi = float(r.group(1)), float(r.group(2))
+        return "H" if v > hi else "L" if v < lo else "N"
+    r = re.match(r"^\s*[<≤]\s*(-?\d+(?:\.\d+)?)", ref)
+    if r:
+        return "H" if v > float(r.group(1)) else "N"
+    r = re.match(r"^\s*[>≥]\s*(-?\d+(?:\.\d+)?)", ref)
+    if r:
+        return "L" if v < float(r.group(1)) else "N"
+    return ""
+
+
+def findings_html(findings: list[dict]) -> str:
+    if not findings:
+        return ""
+    groups: dict[str, list[dict]] = {}
+    for f in findings:
+        groups.setdefault(f.get("category") or "Sonuçlar", []).append(f)
+    out = []
+    for cat, rows in groups.items():
+        numeric = [f for f in rows if f.get("unit") or f.get("ref") or len(str(f.get("result", ""))) <= 25]
+        textual = [f for f in rows if f not in numeric]
+        out.append(f"<p style='margin:8px 0 2px 0'><b>🔬 {esc(cat)}</b></p>")
+        if numeric:
+            trs = []
+            for f in numeric:
+                flag = _auto_flag(f)
+                arrow = {"H": " ↑", "L": " ↓", "A": " ⚠"}.get(flag, "")
+                color = style.BAD if flag in ("H", "L", "A") else style.INK
+                weight = "bold" if flag in ("H", "L", "A") else "normal"
+                trs.append(f"<tr><td>{esc(f.get('test'))}</td>"
+                           f"<td style='color:{color}; font-weight:{weight}'>{esc(f.get('result'))}{arrow}</td>"
+                           f"<td style='color:{style.MUTED}'>{esc(f.get('unit'))}</td>"
+                           f"<td style='color:{style.MUTED}'>{esc(f.get('ref'))}</td></tr>")
+            out.append("<table width='98%' border='1' cellspacing='0' cellpadding='5' "
+                       f"style='border-color:{style.LINE}; border-collapse:collapse'>"
+                       "<tr style='background:#f1f5f9'><th align='left'>Tetkik</th><th align='left'>Sonuç</th>"
+                       "<th align='left'>Birim</th><th align='left'>Referans</th></tr>" + "".join(trs) + "</table>")
+        for f in textual:
+            flag = _auto_flag(f)
+            head = esc(f.get("test")) + (" ⚠" if flag == "A" else "")
+            out.append(_box(f"<b>{head}</b><br>{esc(f.get('result'))}", "#f8fafc", style.LINE))
+    return "".join(out)
+
+
+def _phase(state: dict) -> str:
+    return state.get("phase") or ("done" if state.get("finished") else "stages")
+
+
+def test_html(case: dict, state: dict, full: bool) -> str:
+    qs = case.get("final_test") or []
+    if not qs:
+        return ""
+    answers = state.get("test_answers", {})
+    upto = len(qs) if full else min(len(qs), state.get("test_idx", 0) + 1)
+    out = [f"<hr><a name='test'></a><h2 style='color:{style.ACCENT}'>📝 Vaka sonu testi</h2>"]
+    for k in range(upto):
+        q = qs[k]
+        a = answers.get(str(k))
+        if a is None and not full:
+            continue
+        out.append(f"<a name='test{k}'></a><p><b>{k + 1}.</b> {esc(q['question'])}</p>")
+        rows = []
+        chosen = a.get("answer") if a else None
+        for j, opt in enumerate(q["options"]):
+            mark, color, weight = "", style.INK, "normal"
+            if j == q["answer_index"]:
+                mark, color = " ✓", style.OK
+            if chosen == j:
+                weight = "bold"
+                if j != q["answer_index"]:
+                    mark, color = " ✗", style.BAD
+            rows.append(f"<li style='color:{color}; font-weight:{weight}'>{LETTERS[j]}) {esc(opt)}{mark}</li>")
+        out.append("<ul style='list-style:none'>" + "".join(rows) + "</ul>")
+        fb = []
+        if a is not None:
+            ok = a.get("score") == 1.0
+            fb.append(f"<p style='color:{style.OK if ok else style.BAD}'><b>"
+                      f"{'✓ Doğru' if ok else ('Cevap gösterildi' if a.get('revealed') else '✗ Yanlış')}</b></p>")
+        if q.get("explanation"):
+            fb.append(f"<p>{esc(q['explanation'])}</p>")
+        if fb:
+            good = a is None or a.get("score") == 1.0
+            out.append(_box("".join(fb), "#f0fdfa" if good else style.BAD_SOFT, "#99f6e4" if good else "#fca5a5"))
+    return "".join(out)
+
+
 def render_case_html(case: dict, state: dict, full: bool = False, for_pdf: bool = False) -> str:
     """Vakayı HTML olarak çizer. full=True ise tüm aşamalar ve cevaplar açılır (PDF/okuma için)."""
     stages = case["stages"]
-    cur = len(stages) - 1 if full else state.get("stage", 0)
+    phase = _phase(state)
+    cur = len(stages) - 1 if (full or phase != "stages") else state.get("stage", 0)
     answers = state.get("answers", {})
-    finished = full or state.get("finished", False)
+    finished = full or phase == "done"
     out = [f"<h2 style='color:{style.ACCENT}'>{esc(case['public_title'])}</h2>"]
     if case.get("patient"):
         model = f" · 🤖 {esc(case['model'])}" if case.get("model") and not for_pdf else ""
@@ -60,6 +161,7 @@ def render_case_html(case: dict, state: dict, full: bool = False, for_pdf: bool 
         a = answers.get(str(i))
         out.append(f"<a name='stage{i}'></a><h3>{i + 1}. {esc(st['title'])}</h3>")
         out.append(f"<p>{esc(st['narrative'])}</p>")
+        out.append(findings_html(st.get("findings") or []))
         out.append(f"<p><b>🩺 Görev:</b> {esc(t['prompt'])}</p>")
         show_answer = a is not None or full
         if t["type"] in ("mcq", "multi"):
@@ -112,11 +214,18 @@ def render_case_html(case: dict, state: dict, full: bool = False, for_pdf: bool 
             fb.append(_src_line(st.get("sources", [])))
             out.append(_box("".join(fb), "#f0fdfa", "#99f6e4"))
 
+    if full or phase in ("test", "done"):
+        out.append(test_html(case, state, full=full or phase == "done"))
     if finished:
         out.append("<hr>")
         out.append(f"<a name='summary'></a><h2 style='color:{style.ACCENT}'>Vaka özeti</h2>")
         if state.get("score") is not None and not for_pdf:
-            out.append(f"<p><b>Genel başarı: %{state['score'] * 100:.0f}</b></p>")
+            parts = [f"Genel başarı: %{state['score'] * 100:.0f}"]
+            if state.get("stage_score") is not None:
+                parts.append(f"Vaka aşamaları: %{state['stage_score'] * 100:.0f}")
+            if state.get("test_score") is not None:
+                parts.append(f"Vaka testi: %{state['test_score'] * 100:.0f}")
+            out.append(f"<p><b>{' · '.join(parts)}</b></p>")
         out.append(_box(f"<b>Kesin tanı:</b> {esc(case.get('final_diagnosis', ''))}", "#dcfce7", "#86efac"))
         if case.get("differential"):
             rows = "".join(
@@ -223,12 +332,25 @@ class CasePage(QWidget):
             self.level_cb.setItemData(self.level_cb.count() - 1, v, Qt.ToolTipRole)
         self.docs_btn = QPushButton("Kaynaklar: Tümü")
         self.docs_btn.clicked.connect(self._pick_docs)
+        self.para_cb = QCheckBox("Paraklinik ağırlıklı")
+        self.para_cb.setChecked(True)
+        self.para_cb.setToolTip("Laboratuvar, kan gazı, EKG, görüntüleme ve patoloji sonuçlarını yorumlatan aşamalar")
+        tl = QLabel("Vaka sonu test")
+        tl.setObjectName("muted")
+        self.test_sp = QSpinBox()
+        self.test_sp.setRange(0, 10)
+        self.test_sp.setValue(5)
+        self.test_sp.setSuffix(" soru")
+        self.test_sp.setToolTip("Vaka bittikten sonra sorulacak TUS tarzı test sorusu sayısı (0 = test yok)")
         self.create_btn = QPushButton("Vakayı oluştur")
         self.create_btn.setObjectName("primary")
         self.create_btn.clicked.connect(self.create_case)
         row.addWidget(lab)
         row.addWidget(self.level_cb)
         row.addWidget(self.docs_btn)
+        row.addWidget(self.para_cb)
+        row.addWidget(tl)
+        row.addWidget(self.test_sp)
         row.addStretch()
         row.addWidget(self.create_btn)
         cl.addLayout(row)
@@ -301,6 +423,8 @@ class CasePage(QWidget):
                 st = {}
             if c["finished"]:
                 status = f"Tamamlandı" + (f" · %{c['score'] * 100:.0f}" if c["score"] is not None else "")
+            elif st.get("phase") == "test":
+                status = f"Vaka testinde · {st.get('test_idx', 0) + 1}. soru"
             else:
                 status = f"Devam ediyor · {st.get('stage', 0) + 1}. aşama"
             vals = [c["title"], c["level"], status, dt.datetime.fromtimestamp(c["updated_at"]).strftime("%d.%m.%Y %H:%M")]
@@ -342,6 +466,7 @@ class CasePage(QWidget):
         req = CaseRequest(
             topic="" if own else self.topic_le.text().strip(), own_case=own, level=self.level_cb.currentText(),
             doc_ids=sorted(self.selected_docs) if self.selected_docs is not None else None, profile=self.ctx.profile,
+            paraclinic=self.para_cb.isChecked(), test_count=self.test_sp.value(),
         )
         engine: CaseEngine = self.ctx.case_engine
         self.create_btn.setEnabled(False)
@@ -398,6 +523,7 @@ class CasePage(QWidget):
         ll.setSpacing(8)
         self.view = QTextBrowser()
         self.view.setOpenExternalLinks(False)
+        self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         ll.addWidget(self.view, 1)
 
         self.task_card = QFrame()
@@ -480,25 +606,42 @@ class CasePage(QWidget):
         self.state.setdefault("stage", 0)
         self.state.setdefault("answers", {})
         self.state.setdefault("finished", False)
+        self.state.setdefault("phase", "done" if self.state["finished"] else "stages")
+        self.state.setdefault("test_answers", {})
+        self.state.setdefault("test_idx", 0)
         self.chat_history = []
         self._render_chat()
         self.stack.setCurrentIndex(1)
         self.render()
 
     def _save(self):
-        scores = [a["score"] for a in self.state["answers"].values() if a.get("score") is not None]
-        self.state["score"] = sum(scores) / len(scores) if scores else None
+        st = self.state
+        stage_sc = [a["score"] for a in st["answers"].values() if a.get("score") is not None]
+        test_sc = [a["score"] for a in st.get("test_answers", {}).values() if a.get("score") is not None]
+        st["stage_score"] = sum(stage_sc) / len(stage_sc) if stage_sc else None
+        st["test_score"] = sum(test_sc) / len(test_sc) if test_sc else None
+        allsc = stage_sc + test_sc
+        st["score"] = sum(allsc) / len(allsc) if allsc else None
+        st["finished"] = st.get("phase") == "done"
         self.ctx.db.update_case_state(self.case_id, self.state, self.state["finished"], self.state["score"])
 
     # -------------------------------------------------------------- render
     def render(self, scroll_to_end: bool = True):
         case, st = self.case, self.state
         n = len(case["stages"])
+        tests = case.get("final_test") or []
         i = st["stage"]
+        phase = _phase(st)
         self.title_lbl.setText(case["public_title"])
-        self.stage_badge.setText("Tamamlandı" if st["finished"] else f"Aşama {i + 1} / {n}")
-        self.progress.setRange(0, n)
-        self.progress.setValue(n if st["finished"] else i)
+        if phase == "done":
+            self.stage_badge.setText("Tamamlandı")
+        elif phase == "test":
+            self.stage_badge.setText(f"Test {st['test_idx'] + 1} / {len(tests)}")
+        else:
+            self.stage_badge.setText(f"Aşama {i + 1} / {n}")
+        self.progress.setRange(0, n + len(tests))
+        self.progress.setValue(n + len(tests) if phase == "done" else
+                               n + st["test_idx"] if phase == "test" else i)
         self.view.setHtml(render_case_html(case, st))
         if scroll_to_end:
             # görev paneli yeniden boyutlanınca görünüm de değişir; yerleşim oturduktan sonra tekrar kaydır
@@ -515,7 +658,10 @@ class CasePage(QWidget):
         self.choice_widgets = []
         self.choice_group = None
 
-        if st["finished"]:
+        if phase == "test":
+            self._render_test_task()
+            return
+        if phase == "done":
             self.task_lbl.setText("Vaka tamamlandı. Özeti yukarıda okuyabilir, sağdan soru sorabilir veya PDF olarak kaydedebilirsin.")
             for wdg in (self.choices_box, self.answer_te, self.reveal_btn, self.answer_btn, self.next_btn):
                 wdg.hide()
@@ -524,11 +670,16 @@ class CasePage(QWidget):
         self.new_btn.hide()
         if answered:
             last = i == n - 1
-            self.task_lbl.setText("Geri bildirimi oku, hazır olduğunda devam et." if not last
-                                  else "Son aşamayı tamamladın. Vaka özetini görmek için bitir.")
+            if last and tests:
+                msg, btn = f"Son aşamayı tamamladın. Şimdi {len(tests)} soruluk vaka sonu testi var.", "Teste başla →"
+            elif last:
+                msg, btn = "Son aşamayı tamamladın. Vaka özetini görmek için bitir.", "Vakayı bitir ve özeti gör"
+            else:
+                msg, btn = "Geri bildirimi oku, hazır olduğunda devam et.", "Sonraki aşama →"
+            self.task_lbl.setText(msg)
             for wdg in (self.choices_box, self.answer_te, self.reveal_btn, self.answer_btn):
                 wdg.hide()
-            self.next_btn.setText("Vakayı bitir ve özeti gör" if last else "Sonraki aşama →")
+            self.next_btn.setText(btn)
             self.next_btn.show()
             self.next_btn.setEnabled(True)
             return
@@ -563,10 +714,52 @@ class CasePage(QWidget):
                 tip.setObjectName("muted")
                 self.choices_lay.addWidget(tip)
 
+    def _render_test_task(self):
+        st = self.state
+        tests = self.case["final_test"]
+        k = st["test_idx"]
+        q = tests[k]
+        answered = str(k) in st["test_answers"]
+        if answered:
+            last = k == len(tests) - 1
+            self.task_lbl.setText("Açıklamayı oku, hazır olduğunda devam et.")
+            for wdg in (self.choices_box, self.answer_te, self.reveal_btn, self.answer_btn):
+                wdg.hide()
+            self.next_btn.setText("Testi bitir ve vaka özetini gör" if last else "Sonraki soru →")
+            self.next_btn.show()
+            self.next_btn.setEnabled(True)
+            return
+        self.task_lbl.setText(f"📝 Soru {k + 1}/{len(tests)}: {q['question']}")
+        self.next_btn.hide()
+        self.answer_te.hide()
+        self.answer_btn.show()
+        self.answer_btn.setEnabled(True)
+        self.answer_btn.setText("Cevapla")
+        self.reveal_btn.show()
+        self.reveal_btn.setEnabled(True)
+        self.choices_box.show()
+        self.choice_group = QButtonGroup(self)
+        for j, opt in enumerate(q["options"]):
+            wdg = QRadioButton(f"{LETTERS[j]})  {opt}")
+            wdg.setStyleSheet("padding:3px;")
+            self.choice_group.addButton(wdg, j)
+            self.choices_lay.addWidget(wdg)
+            self.choice_widgets.append(wdg)
+
     def _scroll_to_current(self):
         """Yeni açılan aşamanın (veya özetin) başlığına kaydırır; cevaplanınca geri bildirimi gösterir."""
         st = self.state
-        if st.get("finished"):
+        phase = _phase(st)
+        if phase == "test":
+            if str(st["test_idx"]) in st["test_answers"]:
+                sb = self.view.verticalScrollBar()
+                sb.setValue(sb.maximum())
+            elif st["test_idx"] == 0:
+                self.view.scrollToAnchor("test")
+            else:
+                sb = self.view.verticalScrollBar()
+                sb.setValue(sb.maximum())
+        elif phase == "done":
             self.view.scrollToAnchor("summary")
         elif str(st["stage"]) in st["answers"]:
             sb = self.view.verticalScrollBar()
@@ -576,6 +769,17 @@ class CasePage(QWidget):
 
     # ------------------------------------------------------------- actions
     def submit(self):
+        if _phase(self.state) == "test":
+            k = self.state["test_idx"]
+            j = self.choice_group.checkedId() if self.choice_group else -1
+            if j < 0:
+                QMessageBox.information(self, "Seçim yok", "Bir seçenek işaretleyin.")
+                return
+            q = self.case["final_test"][k]
+            self.state["test_answers"][str(k)] = {"answer": j, "score": 1.0 if j == q["answer_index"] else 0.0}
+            self._save()
+            self.render()
+            return
         i = self.state["stage"]
         task = self.case["stages"][i]["task"]
         if task["type"] == "open":
@@ -625,6 +829,12 @@ class CasePage(QWidget):
         self.render()
 
     def reveal(self):
+        if _phase(self.state) == "test":
+            k = self.state["test_idx"]
+            self.state["test_answers"][str(k)] = {"answer": None, "score": 0.0, "revealed": True}
+            self._save()
+            self.render()
+            return
         i = self.state["stage"]
         task = self.case["stages"][i]["task"]
         draft = self.answer_te.toPlainText().strip() if task["type"] == "open" else None
@@ -633,11 +843,22 @@ class CasePage(QWidget):
         self.render()
 
     def next_stage(self):
+        st = self.state
         n = len(self.case["stages"])
-        if self.state["stage"] < n - 1:
-            self.state["stage"] += 1
-        else:
-            self.state["finished"] = True
+        tests = self.case.get("final_test") or []
+        phase = _phase(st)
+        if phase == "stages":
+            if st["stage"] < n - 1:
+                st["stage"] += 1
+            elif tests:
+                st["phase"], st["test_idx"] = "test", 0
+            else:
+                st["phase"] = "done"
+        elif phase == "test":
+            if st["test_idx"] < len(tests) - 1:
+                st["test_idx"] += 1
+            else:
+                st["phase"] = "done"
         self._save()
         self.render()
 
@@ -658,8 +879,8 @@ class CasePage(QWidget):
         self._chat_flush.start()
         engine: CaseEngine = self.ctx.case_engine
         case = self.case
-        revealed = self.state["stage"] + 1
-        finished = self.state["finished"]
+        revealed = len(self.case["stages"]) if _phase(self.state) != "stages" else self.state["stage"] + 1
+        finished = _phase(self.state) == "done"
 
         def job(progress, task):
             try:
@@ -670,7 +891,7 @@ class CasePage(QWidget):
             finally:
                 llm = getattr(engine, "last_chat_llm", None)
                 if llm is not None:
-                    target["model"] = llm.label
+                    target["model"] = getattr(llm, "label", "")
 
         def on_err(e):
             target["content"] += f"\n\n⚠️ {e}"
@@ -718,6 +939,7 @@ class CasePage(QWidget):
         state = dict(self.state)
         if full:
             state["finished"] = True
+            state["phase"] = "done"
         ok = write_case_pdf(self.case, state, path, full=full)
         if ok:
             QMessageBox.information(self, "Kaydedildi", f"PDF kaydedildi:\n{path}")

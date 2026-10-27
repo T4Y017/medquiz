@@ -1,9 +1,14 @@
 """Belge yükleyiciler (PDF, DOCX, TXT/MD, web) ve metin parçalama."""
 from __future__ import annotations
 
+import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
+
+log = logging.getLogger(__name__)
+Progress = Callable[[int, int], None] | None
 
 SUPPORTED_EXT = {".pdf", ".docx", ".txt", ".md", ".markdown"}
 
@@ -17,6 +22,7 @@ class LoadedDoc:
     source: str
     kind: str
     sections: list[tuple[str, str]]  # (konum etiketi, metin)
+    warnings: list[str] = field(default_factory=list)
 
 
 class IngestError(Exception):
@@ -24,35 +30,101 @@ class IngestError(Exception):
 
 
 # ---------------------------------------------------------------- loaders
-def load_pdf(path: Path) -> LoadedDoc:
+def _pdf_pages_pdfium(path: Path, progress: Progress):
+    """pypdfium2 ile hızlı ve Türkçe karakterlerde daha güvenilir metin çıkarımı."""
+    import pypdfium2 as pdfium
+
+    pdf = pdfium.PdfDocument(str(path))
+    try:
+        n = len(pdf)
+        title = ""
+        try:
+            title = (pdf.get_metadata_dict() or {}).get("Title", "") or ""
+        except Exception:  # noqa: BLE001
+            pass
+        for i in range(n):
+            try:
+                page = pdf[i]
+                tp = page.get_textpage()
+                txt = tp.get_text_range() or ""
+                tp.close()
+                page.close()
+            except Exception:  # noqa: BLE001
+                txt = ""
+            if progress and (i % 10 == 0 or i == n - 1):
+                progress(i + 1, n)
+            yield i + 1, n, txt.replace("\r\n", "\n").replace("\r", "\n"), title
+    finally:
+        pdf.close()
+
+
+def _pdf_pages_pypdf(path: Path, progress: Progress):
     from pypdf import PdfReader
 
-    try:
-        reader = PdfReader(str(path))
-    except Exception as e:  # noqa: BLE001
-        raise IngestError(f"PDF açılamadı: {e}") from e
+    reader = PdfReader(str(path))
     if reader.is_encrypted:
-        try:
-            reader.decrypt("")
-        except Exception as e:  # noqa: BLE001
-            raise IngestError("PDF şifreli, açılamadı.") from e
-    sections = []
-    for i, page in enumerate(reader.pages, start=1):
+        reader.decrypt("")
+    n = len(reader.pages)
+    title = (reader.metadata.title if reader.metadata and reader.metadata.title else "") or ""
+    for i, page in enumerate(reader.pages):
         try:
             txt = page.extract_text() or ""
         except Exception:  # noqa: BLE001
             txt = ""
-        if txt.strip():
-            sections.append((f"s. {i}", txt))
+        if progress and (i % 10 == 0 or i == n - 1):
+            progress(i + 1, n)
+        yield i + 1, n, txt, title
+
+
+def load_pdf(path: Path, progress: Progress = None) -> LoadedDoc:
+    sections: list[tuple[str, str]] = []
+    title, n_pages, empty = "", 0, 0
+    readers = []
+    try:
+        import pypdfium2  # noqa: F401
+        readers.append(_pdf_pages_pdfium)
+    except ImportError:
+        pass
+    readers.append(_pdf_pages_pypdf)
+    last_err: Exception | None = None
+    for reader in readers:
+        sections, empty, n_pages = [], 0, 0
+        try:
+            for i, n, txt, t in reader(path, progress):
+                n_pages, title = n, t or title
+                if len(txt.strip()) < 20:
+                    empty += 1
+                    continue
+                sections.append((f"s. {i}", txt))
+            last_err = None
+            break
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            log.warning("PDF okuyucu %s başarısız: %s", reader.__name__, e)
+    if last_err is not None:
+        msg = str(last_err).lower()
+        if "password" in msg or "encrypt" in msg:
+            raise IngestError("PDF şifreli, açılamadı.") from last_err
+        raise IngestError(f"PDF açılamadı: {last_err}") from last_err
     if not sections:
         raise IngestError(
             "PDF'ten metin çıkarılamadı. Taranmış (resim) bir PDF olabilir; "
             "önce OCR ile metne çevirmeniz gerekir."
         )
-    title = (reader.metadata.title if reader.metadata and reader.metadata.title else "") or ""
+    warnings = []
+    if n_pages and empty / n_pages > 0.3:
+        warnings.append(f"{n_pages} sayfanın {empty} tanesinde metin bulunamadı (taranmış sayfalar olabilir); "
+                        "bu sayfalardan soru üretilemez.")
+    sample = " ".join(t for _, t in sections[:: max(1, len(sections) // 20)])[:20000]
+    if sample:
+        nonspace = [c for c in sample if not c.isspace()]
+        letters = sum(c.isalpha() for c in nonspace) / max(1, len(nonspace))
+        if letters < 0.6:
+            warnings.append("Metin çıkarımı bozuk görünüyor (çok sayıda anlamsız karakter). Kitap düzgün okunmamış "
+                            "olabilir; mümkünse farklı bir PDF sürümü deneyin.")
     if str(title).strip().lower() in ("", "untitled", "microsoft word", "document") or len(str(title)) < 3:
         title = path.stem
-    return LoadedDoc(title=str(title).strip(), source=str(path), kind="pdf", sections=sections)
+    return LoadedDoc(title=str(title).strip(), source=str(path), kind="pdf", sections=sections, warnings=warnings)
 
 
 def load_docx(path: Path) -> LoadedDoc:
@@ -168,7 +240,7 @@ def load_url(url: str, timeout: int = 25) -> LoadedDoc:
     return LoadedDoc(title=title, source=url, kind="web", sections=sections)
 
 
-def load_any(source: str) -> LoadedDoc:
+def load_any(source: str, progress: Progress = None) -> LoadedDoc:
     if re.match(r"^(https?://|www\.)", source.strip(), re.I):
         return load_url(source.strip())
     path = Path(source)
@@ -176,7 +248,7 @@ def load_any(source: str) -> LoadedDoc:
         raise IngestError(f"Dosya bulunamadı: {source}")
     ext = path.suffix.lower()
     if ext == ".pdf":
-        return load_pdf(path)
+        return load_pdf(path, progress)
     if ext == ".docx":
         return load_docx(path)
     if ext in (".txt", ".md", ".markdown"):

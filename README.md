@@ -17,6 +17,8 @@ sistemi çalışır.
 | 🧾 **Vaka özeti** | Kesin tanı, ayırıcı tanı tablosu (lehine/aleyhine), tartışma, akılda kalması gerekenler, sık yapılan hatalar · **PDF olarak kaydet** |
 | ✍️ **Kendi vakam** | Gördüğün/okuduğun bir vakayı yaz, uygulama onu kütüphanendeki kaynaklarla aşamalı bir öğrenme vakasına dönüştürsün |
 | 💬 **Vakaya soru sor** | Vaka sırasında eğitmene soru sor; vaka bitmeden cevabı söylemez, ipucu verir |
+| 🔬 **Paraklinik vaka aşamaları** | Hemogram, biyokimya, kan gazı, EKG, görüntüleme, patoloji sonuçları tablo hâlinde (referans aralığı, ↑/↓ işaretli); görev bu sonuçları yorumlatır |
+| 📝 **Vaka sonu testi** | Vaka bittikten sonra 0–10 soruluk TUS tarzı test (yarısı paraklinik yorum); aşama ve test puanı ayrı gösterilir |
 | 📝 **Quiz** | Çoktan seçmeli (5 şık), klasik veya karışık · Kolay / Orta / Zor / Klinik vaka · konu odaklı ya da tüm kütüphaneden |
 | ♾️ **Sürekli mod** | Sorular bittikçe arka planda yenileri üretilir, daha önce sorulanlar tekrarlanmaz |
 | ✍️ **Klasik cevap puanlama** | 0–100 puan, doğru değinilen / eksik / hatalı noktalar, örnek cevap |
@@ -143,11 +145,34 @@ installer.iss          Inno Setup kurulum betiği
 `%APPDATA%\MedQuiz\` → `medquiz.db` (kütüphane + geçmiş), `settings.json` (API anahtarı dahil),
 `models\` (embedding modeli), `medquiz.log`. Ayarlar → **Veri klasörünü aç**. Yedeklemek için bu klasörü kopyala.
 
+## Büyük kitaplar
+
+- PDF'ler hızlı okunur (pdfium); 1500 sayfalık bir kitap birkaç saniyede eklenir, ilerleme sayfa sayfa gösterilir.
+- Anahtar kelime araması hemen hazırdır; anlamsal (embedding) dizin **arka planda** parça parça hazırlanır.
+  Bu sürerken quiz, vaka ve sohbet beklemeden çalışır; ilerleme Kütüphane sekmesinin altında görünür.
+- İçindekiler, dizin ve kaynakça sayfaları otomatik ayıklanır; konu belirtmeden yapılan quizlerde bu sayfalardan
+  soru üretilmez.
+- Taranmış (resim) sayfalar algılanır ve uyarı verilir; bu sayfalardan soru üretmek için önce OCR gerekir.
+
+## Sorun bildirme
+
+Ayarlar → **Tanılama raporunu kopyala** → sohbete yapıştır. Rapor sürüm, ayarlar, kütüphane durumu ve son log
+satırlarını içerir; API anahtarları otomatik olarak çıkarılır.
+
+## Otomatik test (geliştirici)
+
+Her sürüm etiketinde (`v*`) GitHub Actions, paketlenmiş exe'yi gerçek bir Windows makinesinde
+`MedQuiz.exe --selftest` ile sınar: PDF okuma, arama, anlamsal model, arayüz ve PDF dışa aktarma.
+Depo ayarlarında **Secrets → Actions** altına `GEMINI_API_KEY` (ve/veya `ANTHROPIC_API_KEY`) eklenirse
+gerçek yapay zekâ ile quiz, puanlama ve vaka üretimi de test edilir. Anahtar loglarda görünmez.
+
 ## Sorun giderme
 
 | Sorun | Çözüm |
 |---|---|
 | "PDF'ten metin çıkarılamadı" | Taranmış PDF; önce OCR uygula (örn. Adobe, ocrmypdf) |
+| Quiz/vaka "kullanılabilir soru çıkmadı" diyor | Tekrar dene; sürerse Ayarlar'dan modeli değiştir, konu alanına daha belirgin bir konu yaz |
+| Gemini "kullanım sınırına ulaşıldı" | Ücretsiz katmanın dakikalık/günlük sınırı; bir dakika bekle |
 | "API anahtarı geçersiz" | Anahtarı tekrar kopyala, başında/sonunda boşluk olmasın |
 | "Seçilen model bulunamadı" | Ayarlar'da listeden başka model seç ya da güncel model adını yaz |
 | Web sayfası eklenmiyor | Giriş gerektiren / JavaScript ile yüklenen sayfa; metni kopyalayıp .txt olarak ekle |

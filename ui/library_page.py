@@ -183,47 +183,55 @@ class LibraryPage(QWidget):
         topic = self.topic_le.text().strip()
         db = self.ctx.db
         self.ingesting = True
-        self.prog.setRange(0, len(sources))
+        self.prog.setRange(0, len(sources) * 100)
         self.prog.setValue(0)
         self.prog.show()
 
         def job(progress, task):
-            added, skipped, errors = 0, 0, []
+            added, skipped, errors, warnings = 0, 0, [], []
             for i, src in enumerate(sources):
                 if task.cancelled:
                     break
-                progress((i, f"Okunuyor: {Path(src).name if not src.startswith('http') else src}"))
+                name = Path(src).name if not src.startswith("http") else src
+                progress((i, f"Okunuyor: {name}"))
                 if db.source_exists(src):
                     skipped += 1
                     continue
                 try:
-                    doc = load_any(src)
+                    def on_page(p, n, i=i, name=name):
+                        progress((i + p / max(1, n), f"Okunuyor: {name} — sayfa {p}/{n}"))
+
+                    doc = load_any(src, on_page)
+                    progress((i + 1, f"Bölümleniyor: {name}"))
                     chunks = chunk_doc(doc)
                     if not chunks:
                         raise IngestError("Metin bulunamadı.")
                     db.add_document(doc.title, doc.source, doc.kind, chunks, topic=topic)
+                    warnings.extend(f"{name}: {w}" for w in doc.warnings)
                     added += 1
                 except IngestError as e:
                     errors.append(f"{Path(src).name if not src.startswith('http') else src}: {e}")
                 except Exception as e:  # noqa: BLE001
                     errors.append(f"{src}: beklenmeyen hata — {e}")
                 progress((i + 1, ""))
-            return added, skipped, errors
+            return added, skipped, errors, warnings
 
         def on_prog(ev):
             i, msg = ev
-            self.prog.setValue(i)
+            self.prog.setValue(int(i * 100))
             if msg:
                 self.status.setText(msg)
 
         def on_res(res):
-            added, skipped, errors = res
+            added, skipped, errors, warnings = res
             parts = [f"{added} belge eklendi"]
             if skipped:
                 parts.append(f"{skipped} zaten vardı")
             self.status.setText(" · ".join(parts) + ".")
             if errors:
                 QMessageBox.warning(self, "Bazı belgeler eklenemedi", "\n\n".join(errors[:10]))
+            if warnings:
+                QMessageBox.information(self, "Eklendi, ancak dikkat", "\n\n".join(warnings[:10]))
             if added:
                 self.ctx.notify_library_changed()
 

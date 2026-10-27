@@ -72,18 +72,31 @@ class ProviderRow:
         settings, provider = self.page.ctx.settings, self.provider
 
         def job(progress, task):
+            import time
+            t0 = time.time()
             c = LLMClient(settings, provider)
-            c.complete("Kısa yanıt ver.", [{"role": "user", "content": "Sadece 'Tamam' yaz."}],
-                       max_tokens=200, temperature=0)
-            return c.label
+            # Gerçek kullanıma benzeyen mini görev: JSON biçiminde tek bir çoktan seçmeli soru
+            data = c.complete_json(
+                "Sen bir tıp eğitimcisisin. Yalnızca geçerli JSON döndür.",
+                'Hipoglisemi hakkında 4 şıklı tek bir kısa soru yaz. Biçim: '
+                '{"question": "...", "options": ["...","...","...","..."], "answer_index": 0}',
+                max_tokens=600, temperature=0.3)
+            q = str(data.get("question") or data.get("items", [{}])[0].get("question", "")).strip()
+            if not q:
+                raise RuntimeError(f"Yanıt alındı ama beklenen biçimde değil: {str(data)[:200]}")
+            return c.label, time.time() - t0, q
 
-        def ok(label):
-            self.status.setText(f"✓ Bağlantı başarılı ({label})")
+        def ok(res):
+            label, secs, q = res
+            self.status.setText(f"✓ Çalışıyor — {label} · {secs:.1f} sn · örnek soru: “{q[:90]}”")
             self.status.setStyleSheet(f"color:{style.OK};")
+            self.status.setWordWrap(True)
 
         def fail(e):
             self.status.setText(f"✗ {e}")
             self.status.setStyleSheet(f"color:{style.BAD};")
+            self.status.setWordWrap(True)
+            self.status.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         self.page.ctx.runner.start(job, on_result=ok, on_error=fail,
                                    on_finished=lambda: self.test_btn.setEnabled(True))
@@ -180,6 +193,10 @@ class SettingsPage(QWidget):
         root.addWidget(card2)
 
         row = QHBoxLayout()
+        diag = QPushButton("Tanılama raporunu kopyala")
+        diag.setToolTip("Sorun yaşarsanız bu raporu (API anahtarları çıkarılmış hâlde) destek için paylaşabilirsiniz.")
+        diag.clicked.connect(self.copy_diagnostics)
+        row.addWidget(diag)
         open_dir = QPushButton("Veri klasörünü aç")
         open_dir.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(data_dir()))))
         row.addWidget(open_dir)
@@ -200,6 +217,17 @@ class SettingsPage(QWidget):
         root.addWidget(disc)
         root.addStretch()
         ctx.settings_changed.connect(self._sync_primary)
+
+    def copy_diagnostics(self):
+        from PySide6.QtWidgets import QApplication
+
+        from core.diagnostics import build_report
+
+        report = build_report(self.ctx)
+        QApplication.clipboard().setText(report)
+        QMessageBox.information(self, "Kopyalandı",
+                                "Tanılama raporu panoya kopyalandı (API anahtarları çıkarıldı).\n\n"
+                                "Sohbete yapıştırarak paylaşabilirsiniz.")
 
     def _sync_primary(self):
         i = self.primary.findData(self.ctx.settings.provider)

@@ -1,6 +1,6 @@
 ; Inno Setup betiği — dist\MedQuiz klasöründen tek bir kurulum dosyası üretir.
 #define AppName "MedQuiz"
-#define AppVersion "1.2.0"
+#define AppVersion "1.3.0"
 
 [Setup]
 AppId={{6B1C2E7A-4D3F-4B8E-9A61-2F0C5D7E8A11}

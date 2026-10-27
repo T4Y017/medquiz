@@ -6,8 +6,14 @@ from dataclasses import dataclass
 from typing import Callable, Iterator
 
 from .db import Database
+import json
+import logging
+
+from . import normalize as nz
 from .llm import LLMClient, LLMError
 from .retrieval import Retriever
+
+log = logging.getLogger(__name__)
 
 DIFFICULTIES = {
     "Kolay": "Temel tanım, sınıflama ve doğrudan bilgi soruları. Tek adımlı hatırlama.",
@@ -121,6 +127,8 @@ class QuizEngine:
         remaining = max(1, req.count)
         recent = self.db.recent_question_texts(40)
         attempts = 0
+        empty_streak = 0
+        last_problem = ""
         while remaining > 0 and attempts < req.count + 3:
             attempts += 1
             if should_stop and should_stop():
@@ -131,9 +139,14 @@ class QuizEngine:
             if not ctx:
                 raise LLMError(f"'{req.topic}' konusunda kütüphanede ilgili içerik bulunamadı. "
                                "Farklı bir konu yazın ya da konu alanını boş bırakın.")
-            batch = self._generate_batch(llm, ctx, n, req, recent + [q["question"] for q in out])
+            batch, problem = self._generate_batch(llm, ctx, n, req, recent + [q["question"] for q in out])
             if not batch:
+                empty_streak += 1
+                last_problem = problem
+                if empty_streak >= 2:
+                    break
                 continue
+            empty_streak = 0
             for q in batch:
                 q["model"] = getattr(llm, "label", "")
                 q["fell_back"] = bool(getattr(llm, "fell_back", False))
@@ -144,6 +157,11 @@ class QuizEngine:
             remaining -= len(batch)
             if on_batch:
                 on_batch(batch)
+        if not out and not (should_stop and should_stop()):
+            raise LLMError(
+                "Yapay zekâ yanıt verdi ama kullanılabilir soru çıkmadı. "
+                f"{last_problem} Tekrar deneyin; sorun sürerse Ayarlar'dan başka bir model seçin "
+                "veya konu alanına daha belirgin bir konu yazın.")
         return out
 
     def _type_instruction(self, qtype: str, n: int) -> str:
@@ -168,19 +186,32 @@ class QuizEngine:
             f"Daha önce sorulan sorular (bunları tekrarlama):\n{avoid_txt}\n\n{JSON_SPEC}"
         )
         data = llm.complete_json(SYSTEM_QUIZ, user, max_tokens=8000, temperature=0.8)
+        raw = nz.items(data, "questions", "items", "sorular", "quiz")
         questions = []
-        for q in data.get("questions", []):
-            norm = self._normalize(q, keymap, ctx)
+        for q in raw:
+            norm = self._normalize(q, keymap, ctx) if isinstance(q, dict) else None
             if norm:
                 questions.append(norm)
-        return questions[:n]
+        problem = ""
+        if not questions:
+            problem = ("(Yanıtta soru listesi bulunamadı.)" if not raw else
+                       f"({len(raw)} sorunun hiçbiri beklenen biçimde değildi.)")
+            log.warning("Kullanılamayan quiz yanıtı (%s): %s", getattr(llm, "label", "?"),
+                        json.dumps(data, ensure_ascii=False)[:3000])
+        return questions[:n], problem
 
     def _normalize(self, q: dict, keymap: dict[str, dict], ctx: list[dict]) -> dict | None:
-        qtype = q.get("type")
-        text = str(q.get("question", "")).strip()
-        if not text or qtype not in ("mcq", "open"):
+        text = nz.text(nz.first(q, "question", "stem", "prompt", "soru", "text"))
+        if not text:
             return None
-        keys = [k.strip("[] ") for k in q.get("source_keys", []) if isinstance(k, str)]
+        raw_opts = nz.first(q, "options", "choices", "secenekler", "şıklar", "siklar")
+        qtype = nz.norm_type(q.get("type"), default="mcq" if raw_opts else "open")
+        if qtype == "multi":
+            qtype = "mcq"
+        keys_raw = nz.first(q, "source_keys", "sources", "source", "kaynak", default=[])
+        if isinstance(keys_raw, str):
+            keys_raw = [keys_raw]
+        keys = [str(k).strip("[] ") for k in keys_raw if isinstance(k, (str, int))]
         src_chunks = [keymap[k] for k in keys if k in keymap] or ctx[:1]
         base = {
             "type": qtype,
@@ -191,12 +222,9 @@ class QuizEngine:
             "source_texts": [c["text"] for c in src_chunks],
         }
         if qtype == "mcq":
-            opts = [str(o).strip() for o in q.get("options", []) if str(o).strip()]
-            try:
-                ans = int(q.get("answer_index", -1))
-            except (TypeError, ValueError):
-                return None
-            if len(opts) < 4 or not 0 <= ans < len(opts):
+            opts, flagged = nz.options_with_flags(raw_opts)
+            ans = nz.mcq_answer(q, opts, flagged)
+            if len(opts) < 3 or ans is None:
                 return None
             # LLM'lerin doğru şıkkı belli konumlara koyma eğilimini kır: şıkları karıştır
             correct = opts[ans]
@@ -204,10 +232,13 @@ class QuizEngine:
             self.rng.shuffle(order)
             opts = [opts[i] for i in order]
             base.update(options=opts, answer_index=opts.index(correct),
-                        explanation=str(q.get("explanation", "")).strip())
+                        explanation=nz.text(nz.first(q, "explanation", "rationale", "aciklama", "açıklama")))
         else:
-            kp = [str(k).strip() for k in q.get("key_points", []) if str(k).strip()]
-            base.update(model_answer=str(q.get("model_answer", "")).strip(), key_points=kp)
+            kp = nz.str_list(nz.first(q, "key_points", "keyPoints", "points", "rubric", "anahtar_noktalar"))
+            model = nz.text(nz.first(q, "model_answer", "modelAnswer", "answer", "sample_answer", "ornek_cevap"))
+            if not model and kp:
+                model = "\n".join(f"• {k}" for k in kp)
+            base.update(model_answer=model, key_points=kp)
             if not base["model_answer"]:
                 return None
         return base

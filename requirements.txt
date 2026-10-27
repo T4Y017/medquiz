@@ -7,3 +7,4 @@ requests>=2.31
 beautifulsoup4>=4.12
 numpy>=1.26
 fastembed>=0.4
+pypdfium2>=4.30

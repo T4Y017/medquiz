@@ -1,14 +1,20 @@
 """Vaka çalışması: kaynaklara dayalı, adım adım ilerleyen interaktif klinik vakalar."""
 from __future__ import annotations
 
+import json
+import logging
 import random
+import re
 from dataclasses import dataclass
 from typing import Callable, Iterator
 
+from . import normalize as nz
 from .db import Database
 from .llm import LLMClient, LLMError
 from .quiz import QuizEngine, format_context, source_label
 from .retrieval import Retriever
+
+log = logging.getLogger(__name__)
 
 LEVELS = {
     "Öğrenci": "Dönem 4-6 tıp öğrencisi: temel yaklaşım, klasik bulgular, ilk basamak tetkik ve tedavi.",
@@ -29,7 +35,26 @@ SYSTEM_CASE = """Sen deneyimli bir klinisyen ve tıp eğitimcisisin. Verilen KAY
 - Kaynakta olmayan ama vaka için gerekli tıbbi bilgi kullandıysan o aşamada "general_knowledge": true yap.
 - Vakadaki hasta tamamen kurgusaldır.
 - "teaching" kısmı öğretici olsun: neden-sonuç, patofizyoloji, sık yapılan hatalar.
+- Laboratuvar/görüntüleme sonuçlarını "findings" listesinde YAPILANDIRILMIŞ ver (test, sonuç, birim, referans aralığı);
+  bu değerleri narrative içinde tekrar yazma ve yorumunu önceden verme — yorumu öğrenci yapacak.
 - YALNIZCA geçerli JSON döndür."""
+
+PARACLINIC_RULES = """PARAKLİNİK AĞIRLIK (zorunlu):
+- En az 2 aşama paraklinik yorum aşaması olsun. Uygun olanları seç: tam kan sayımı, biyokimya, elektrolitler,
+  arter/venöz kan gazı, idrar tetkiki, koagülasyon, kardiyak/inflamatuvar belirteçler, hormonlar, BOS/plevral sıvı,
+  EKG, akciğer grafisi, USG/BT/MR raporu, ekokardiyografi, patoloji, mikrobiyoloji/kültür.
+- Bu aşamalarda sonuçlar "findings" listesinde verilsin; görev sonuçları YORUMLAMAYI istesin (hangi değerler anormal,
+  hangi tabloyu gösteriyor, ör. anyon açığı hesabı, asit-baz bozukluğunun tipi ve kompanzasyonu, EKG bulgusunun
+  lokalizasyonu, görüntüleme bulgusunun anlamı).
+- Değerler birbiriyle ve klinikle tutarlı olsun; anormal olanları "flag" ile işaretle (H yüksek, L düşük, A anormal).
+- EKG/görüntüleme gibi sayısal olmayan tetkiklerde "result" alanına bulguyu tarif eden kısa rapor yaz (yorum değil)."""
+
+TEST_RULES = """VAKA SONU TESTİ:
+"final_test" listesinde tam olarak {n} adet TUS tarzı, 5 şıklı, tek doğru cevaplı soru yaz. Sorular vakanın konusunu
+pekiştirsin ama vakanın kendisini tekrar sormasın. {para}Her soruda kısa "explanation" ver.
+Bir sorunun kökünde laboratuvar değerleri veriyorsan birimleriyle yaz."""
+
+TEST_PARA = "En az yarısı paraklinik yorum sorusu olsun (soru kökünde yeni lab/kan gazı/EKG/görüntüleme verisi verip yorumlatan). "
 
 CASE_SPEC = """Şu JSON yapısını döndür:
 {
@@ -61,6 +86,17 @@ CASE_SPEC = """Şu JSON yapısını döndür:
       "teaching": "...", "source_keys": ["K2"], "general_knowledge": false
     },
     {
+      "title": "Laboratuvar sonuçları",
+      "narrative": "istenen tetkiklerin sonuçları geldi",
+      "findings": [
+        {"category": "Kan gazı", "test": "pH", "result": "7.21", "unit": "", "ref": "7.35-7.45", "flag": "L"},
+        {"category": "Kan gazı", "test": "HCO3", "result": "11", "unit": "mEq/L", "ref": "22-26", "flag": "L"},
+        {"category": "EKG", "test": "12 derivasyon EKG", "result": "Sinüs taşikardisi, 118/dk; ...", "unit": "", "ref": "", "flag": "A"}
+      ],
+      "task": {"type": "open", "prompt": "Sonuçları yorumlayınız: ...", "expected_points": ["..."], "model_answer": "..."},
+      "teaching": "...", "source_keys": ["K2"], "general_knowledge": false
+    },
+    {
       "title": "Tanı",
       "narrative": "tetkik sonuçları ...",
       "task": {
@@ -77,6 +113,10 @@ CASE_SPEC = """Şu JSON yapısını döndür:
   "discussion": "patofizyoloji, tanı ve tedavi yaklaşımını bağlayan kapsamlı tartışma (birkaç paragraf)",
   "teaching_points": ["akılda kalması gereken nokta", "..."],
   "pitfalls": ["sık yapılan hata / kaçırılan nokta", "..."],
+  "final_test": [
+    {"question": "...", "options": ["...", "...", "...", "...", "..."], "answer_index": 0,
+     "explanation": "...", "skill": "paraklinik"}
+  ],
   "source_keys": ["K1", "K2"]
 }
 Kurallar: 5-7 aşama olsun; görev türlerini karıştır (open, mcq, multi). mcq 4-5 şıklı ve tek doğru;
@@ -96,6 +136,8 @@ class CaseRequest:
     level: str = "Öğrenci"
     doc_ids: list[int] | None = None
     profile: str = ""
+    paraclinic: bool = True
+    test_count: int = 5
 
 
 class CaseEngine:
@@ -132,13 +174,24 @@ class CaseEngine:
         else:
             focus = "Vaka konusu: kaynak metinlerdeki en öğretici klinik tabloyu seç.\n"
 
+        extra = []
+        if req.paraclinic:
+            extra.append(PARACLINIC_RULES)
+        n_test = max(0, min(10, req.test_count))
+        if n_test:
+            extra.append(TEST_RULES.format(n=n_test, para=TEST_PARA if req.paraclinic else ""))
+        else:
+            extra.append('"final_test" alanını boş liste [] olarak bırak.')
         user = (f"KAYNAK METİNLER:\n\n{context}\n\n=====\n\n{focus}"
-                f"Hedef seviye: {req.level} — {LEVELS.get(req.level, '')}\n\n{CASE_SPEC}")
+                f"Hedef seviye: {req.level} — {LEVELS.get(req.level, '')}\n\n{CASE_SPEC}\n\n" + "\n\n".join(extra))
         llm = self.llm_factory()
-        data = llm.complete_json(SYSTEM_CASE, user, max_tokens=12000, temperature=0.7)
+        data = llm.complete_json(SYSTEM_CASE, user, max_tokens=16000, temperature=0.7)
         case = self._normalize(data, keymap, ctx)
-        if not case["stages"]:
-            raise LLMError("Model geçerli bir vaka üretemedi. Lütfen tekrar deneyin.")
+        if len(case["stages"]) < 2:
+            log.warning("Kullanılamayan vaka yanıtı (%s): %s", getattr(llm, "label", "?"),
+                        json.dumps(data, ensure_ascii=False)[:3000])
+            raise LLMError("Yapay zekâ yanıt verdi ama vaka beklenen biçimde değildi. Lütfen tekrar deneyin; "
+                           "sorun sürerse Ayarlar'dan başka bir model seçin.")
         case["level"] = req.level
         case["model"] = getattr(llm, "label", "")
         case["topic"] = req.topic.strip() or ("Kendi vakam" if req.own_case.strip() else "")
@@ -149,82 +202,149 @@ class CaseEngine:
         return {"id": cid, "payload": case}
 
     def _sources(self, keys, keymap) -> list[dict]:
+        if isinstance(keys, str):
+            keys = re.findall(r"K\d+", keys) or [keys]
         out = []
         for k in keys or []:
-            if isinstance(k, str):
-                k = k.strip("[] ")
+            if isinstance(k, (str, int)):
+                k = str(k).strip("[] ")
+                if k.isdigit():
+                    k = f"K{k}"
                 if k in keymap:
                     c = keymap[k]
                     out.append({"key": k, "label": source_label(c), "text": c["text"], "chunk_id": c["id"]})
         return out
 
-    def _normalize(self, data: dict, keymap: dict, ctx: list[dict]) -> dict:
-        stages = []
-        for s in data.get("stages", []):
-            task = s.get("task") or {}
-            ttype = task.get("type")
-            prompt = str(task.get("prompt", "")).strip()
-            narrative = str(s.get("narrative", "")).strip()
-            if not narrative or not prompt or ttype not in ("open", "mcq", "multi"):
+    def _choice_task(self, ttype: str, task: dict) -> dict | None:
+        opts, flagged = nz.options_with_flags(nz.first(task, "options", "choices", "secenekler"))
+        if len(opts) < 3:
+            return None
+        if ttype == "mcq":
+            ans = nz.mcq_answer(task, opts, flagged)
+            if ans is None:
+                return None
+            correct = {ans}
+        else:
+            correct = nz.multi_answer(task, opts, flagged)
+            if not correct:
+                return None
+        order = list(range(len(opts)))
+        self.rng.shuffle(order)
+        t = {"type": ttype, "options": [opts[i] for i in order]}
+        new_correct = sorted(order.index(i) for i in correct)
+        if ttype == "mcq":
+            t["answer_index"] = new_correct[0]
+        else:
+            t["correct_indices"] = new_correct
+        return t
+
+    @staticmethod
+    def _findings(raw) -> list[dict]:
+        out = []
+        if isinstance(raw, dict):            # {"Hemogram": [...], "EKG": "..."} biçimi
+            flat = []
+            for cat, v in raw.items():
+                if isinstance(v, list):
+                    flat += [dict(x, category=x.get("category", cat)) if isinstance(x, dict) else
+                             {"category": cat, "test": cat, "result": str(x)} for x in v]
+                else:
+                    flat.append({"category": cat, "test": cat, "result": nz.text(v)})
+            raw = flat
+        for f in raw or []:
+            if isinstance(f, str):
+                f = {"test": "", "result": f}
+            if not isinstance(f, dict):
                 continue
-            t: dict = {"type": ttype, "prompt": prompt}
-            if ttype == "open":
-                t["expected_points"] = [str(x).strip() for x in task.get("expected_points", []) if str(x).strip()]
-                t["model_answer"] = str(task.get("model_answer", "")).strip()
+            test = nz.text(nz.first(f, "test", "name", "parameter", "parametre"))
+            result = nz.text(nz.first(f, "result", "value", "deger", "değer", "sonuc", "sonuç"))
+            if not (test or result):
+                continue
+            flag = str(f.get("flag", "") or "").strip().upper()[:1]
+            out.append({
+                "category": nz.text(nz.first(f, "category", "panel", "kategori")) or "Sonuçlar",
+                "test": test, "result": result,
+                "unit": nz.text(f.get("unit", "")), "ref": nz.text(nz.first(f, "ref", "reference", "referans")),
+                "flag": flag if flag in ("H", "L", "A", "N") else "",
+            })
+        return out
+
+    def _normalize(self, data: dict, keymap: dict, ctx: list[dict]) -> dict:
+        if not isinstance(data, dict):
+            data = {"stages": data}
+        stages = []
+        for s in nz.items(data, "stages", "steps", "asamalar", "aşamalar"):
+            if not isinstance(s, dict):
+                continue
+            task = nz.first(s, "task", "question", "gorev", "görev", default={})
+            if isinstance(task, str):
+                task = {"type": "open", "prompt": task}
+            prompt = nz.text(nz.first(task, "prompt", "question", "soru", "text"))
+            narrative = nz.text(nz.first(s, "narrative", "description", "text", "content", "scenario", "anlatim"))
+            findings = self._findings(nz.first(s, "findings", "results", "labs", "bulgular", "sonuclar"))
+            if not narrative and findings:
+                narrative = "Tetkik sonuçları aşağıdadır."
+            if not narrative or not prompt:
+                continue
+            has_opts = bool(nz.first(task, "options", "choices"))
+            ttype = nz.norm_type(task.get("type"), default="mcq" if has_opts else "open")
+            if ttype in ("mcq", "multi"):
+                t = self._choice_task(ttype, task)
+                if t is None:
+                    continue
+                t["prompt"] = prompt
+            else:
+                t = {"type": "open", "prompt": prompt,
+                     "expected_points": nz.str_list(nz.first(task, "expected_points", "key_points", "points",
+                                                             "rubric")),
+                     "model_answer": nz.text(nz.first(task, "model_answer", "answer", "ideal_answer"))}
                 if not t["expected_points"] and not t["model_answer"]:
                     continue
-            else:
-                opts = [str(o).strip() for o in task.get("options", []) if str(o).strip()]
-                if len(opts) < 3:
-                    continue
-                if ttype == "mcq":
-                    try:
-                        ans = int(task.get("answer_index", -1))
-                    except (TypeError, ValueError):
-                        continue
-                    if not 0 <= ans < len(opts):
-                        continue
-                    correct = {ans}
-                else:
-                    try:
-                        correct = {int(i) for i in task.get("correct_indices", []) if 0 <= int(i) < len(opts)}
-                    except (TypeError, ValueError):
-                        continue
-                    if not correct:
-                        continue
-                # şıkları karıştır
-                order = list(range(len(opts)))
-                self.rng.shuffle(order)
-                t["options"] = [opts[i] for i in order]
-                new_correct = sorted(order.index(i) for i in correct)
-                if ttype == "mcq":
-                    t["answer_index"] = new_correct[0]
-                else:
-                    t["correct_indices"] = new_correct
             stages.append({
-                "title": str(s.get("title", "")).strip() or f"Aşama {len(stages) + 1}",
+                "title": nz.text(s.get("title")) or f"Aşama {len(stages) + 1}",
                 "narrative": narrative,
+                "findings": findings,
                 "task": t,
-                "teaching": str(s.get("teaching", "")).strip(),
-                "sources": self._sources(s.get("source_keys"), keymap),
+                "teaching": nz.text(nz.first(s, "teaching", "teaching_note", "explanation", "ogretim_notu")),
+                "sources": self._sources(nz.first(s, "source_keys", "sources"), keymap),
                 "general_knowledge": bool(s.get("general_knowledge", False)),
             })
+
+        test = []
+        for q in nz.items(data, "final_test", "test", "quiz", "questions") if isinstance(data, dict) else []:
+            if not isinstance(q, dict):
+                continue
+            stem = nz.text(nz.first(q, "question", "stem", "prompt", "soru"))
+            t = self._choice_task("mcq", q) if stem else None
+            if t:
+                test.append({"question": stem, "options": t["options"], "answer_index": t["answer_index"],
+                             "explanation": nz.text(nz.first(q, "explanation", "rationale", "aciklama")),
+                             "skill": nz.text(q.get("skill", ""))})
+
         diff = []
-        for d in data.get("differential", []) or []:
-            if isinstance(d, dict) and str(d.get("diagnosis", "")).strip():
-                diff.append({k: str(d.get(k, "")).strip() for k in ("diagnosis", "for", "against")})
-        all_keys = list(dict.fromkeys(
-            [k for s in data.get("stages", []) for k in (s.get("source_keys") or []) if isinstance(k, str)]
-            + [k for k in (data.get("source_keys") or []) if isinstance(k, str)]))
+        for d in nz.first(data, "differential", "differential_diagnosis", "ayirici_tani", default=[]) or []:
+            if isinstance(d, dict) and nz.text(nz.first(d, "diagnosis", "name", "tani")):
+                diff.append({"diagnosis": nz.text(nz.first(d, "diagnosis", "name", "tani")),
+                             "for": nz.text(nz.first(d, "for", "supporting", "lehine")),
+                             "against": nz.text(nz.first(d, "against", "opposing", "aleyhine"))})
+            elif isinstance(d, str) and d.strip():
+                diff.append({"diagnosis": d.strip(), "for": "", "against": ""})
+        all_keys = []
+        for st in nz.items(data, "stages", "steps"):
+            if isinstance(st, dict):
+                k = st.get("source_keys") or []
+                all_keys += k if isinstance(k, list) else [k]
+        k = data.get("source_keys") or []
+        all_keys = list(dict.fromkeys(all_keys + (k if isinstance(k, list) else [k])))
         return {
-            "public_title": str(data.get("public_title", "")).strip() or "Klinik vaka",
-            "patient": str(data.get("patient", "")).strip(),
+            "public_title": nz.text(nz.first(data, "public_title", "title")) or "Klinik vaka",
+            "patient": nz.text(data.get("patient")),
             "stages": stages,
-            "final_diagnosis": str(data.get("final_diagnosis", "")).strip(),
+            "final_test": test,
+            "final_diagnosis": nz.text(nz.first(data, "final_diagnosis", "diagnosis", "kesin_tani")),
             "differential": diff,
-            "discussion": str(data.get("discussion", "")).strip(),
-            "teaching_points": [str(x).strip() for x in data.get("teaching_points", []) if str(x).strip()],
-            "pitfalls": [str(x).strip() for x in data.get("pitfalls", []) if str(x).strip()],
+            "discussion": nz.text(nz.first(data, "discussion", "tartisma")),
+            "teaching_points": nz.str_list(nz.first(data, "teaching_points", "key_points", "ogretim_noktalari")),
+            "pitfalls": nz.str_list(nz.first(data, "pitfalls", "common_mistakes")),
             "sources": self._sources(all_keys, keymap),
         }
 
@@ -257,7 +377,9 @@ class CaseEngine:
         stages = case["stages"][:revealed]
         lines = [f"Hasta: {case.get('patient', '')}"]
         for s in stages:
-            lines.append(f"## {s['title']}\n{s['narrative']}\nGörev: {s['task']['prompt']}")
+            f = "\n".join(f"- {x['test']}: {x['result']} {x['unit']} (ref {x['ref']})".strip()
+                          for x in s.get("findings", []))
+            lines.append(f"## {s['title']}\n{s['narrative']}\n{f}\nGörev: {s['task']['prompt']}")
         if finished:
             lines.append(f"## Kesin tanı\n{case.get('final_diagnosis', '')}\n\n## Tartışma\n{case.get('discussion', '')}")
         else:
