@@ -19,6 +19,11 @@ _TYPE_MAP = {
     "freetext": "open", "free_text": "open", "written": "open",
     "match": "match", "matching": "match", "eslestirme": "match", "eşleştirme": "match", "pairs": "match",
     "matchingpairs": "match", "matching_pairs": "match",
+    "fill": "fill", "fillin": "fill", "fill_in": "fill", "fillblank": "fill", "fill_blank": "fill",
+    "fillintheblank": "fill", "fill_in_the_blank": "fill", "fill_in_the_blanks": "fill", "fillintheblanks": "fill",
+    "cloze": "fill", "gap": "fill", "gapfill": "fill", "gap_fill": "fill", "blank": "fill", "blanks": "fill",
+    "bosluk": "fill", "boşluk": "fill", "boslukdoldurma": "fill", "boşlukdoldurma": "fill",
+    "bosluk_doldurma": "fill", "boşluk_doldurma": "fill", "completion": "fill",
     "multi": "multi", "multiselect": "multi", "multi_select": "multi", "multipleselect": "multi",
     "multiple_select": "multi", "multipleanswer": "multi", "multiple_answer": "multi", "checkbox": "multi",
     "coklusecim": "multi", "çokluseçim": "multi", "selectall": "multi", "select_all": "multi",
@@ -223,3 +228,84 @@ def pairs(q: dict) -> list[tuple[str, str]]:
         seen_r.add(r.lower())
         uniq.append((l, r))
     return uniq[:6]
+
+
+# ------------------------------------------------------------------ boşluk doldurma
+BLANK = "____"
+_BLANK_RE = re.compile(r"_{3,}|\[\s*(?:\d+|boşluk|bosluk|blank|___)\s*\]|\(\s*\d+\s*\)_*|…{2,}|\.{5,}",
+                       re.IGNORECASE)
+
+
+def blanks(q: dict) -> tuple[str, list[dict]]:
+    """Boşluklu cümleyi '____' biçimine getirir ve [{answer, alternatives}] listesi döndürür."""
+    sent = text(first(q, "question", "sentence", "text", "stem", "soru", "cumle", "cümle"))
+    raw = first(q, "blanks", "answers", "answer", "gaps", "cevaplar", "cevap", "bosluklar", "boşluklar")
+    if isinstance(raw, (str, int, float)):
+        raw = [raw]
+    if isinstance(raw, dict):
+        raw = [raw[k] for k in sorted(raw, key=lambda k: str(k))]
+    out: list[dict] = []
+    for b in raw or []:
+        if isinstance(b, dict):
+            ans = text(first(b, "answer", "text", "correct", "value", "cevap", "word"))
+            alts = str_list(first(b, "alternatives", "accept", "accepted", "synonyms", "alternatifler", default=[]))
+        else:
+            ans, alts = text(b), []
+            if "/" in ans and len(ans) < 80:
+                parts = [p.strip() for p in ans.split("/") if p.strip()]
+                ans, alts = parts[0], parts[1:]
+        if ans:
+            out.append({"answer": ans, "alternatives": [a for a in alts if a and a != ans][:6]})
+    sent = _BLANK_RE.sub(BLANK, sent)
+    n = sent.count(BLANK)
+    if n == 0 and len(out) == 1:                    # boşluk işaretlenmemiş: cevabı cümlede bul ve boşalt
+        m = re.search(re.escape(out[0]["answer"]), sent, re.IGNORECASE)
+        if m:
+            sent = sent[:m.start()] + BLANK + sent[m.end():]
+            n = 1
+    if n == 0 or n != len(out):
+        return sent, []
+    return sent, out
+
+
+_FOLD = str.maketrans("çğıöşüâîûÇĞİIÖŞÜ", "cgiosuaiucgiiosu")
+
+
+def fold(s: str) -> str:
+    """Karşılaştırma için: küçük harf, Türkçe karakterleri sadeleştir, noktalama/boşluk at."""
+    s = unicodedata.normalize("NFKC", str(s)).replace("İ", "i").replace("I", "ı").lower().translate(_FOLD)
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = re.sub(r"\([^)]*\)", " ", s)              # parantez içi açıklamalar
+    return re.sub(r"[^a-z0-9%.,]+", "", s).strip(".,")
+
+
+def _lev(a: str, b: str, cap: int = 3) -> int:
+    if abs(len(a) - len(b)) > cap:
+        return cap + 1
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def blank_ok(user: str, blank: dict) -> bool:
+    """Yazım hatası, büyük/küçük harf, Türkçe karakter ve eş anlamlılara karşı hoşgörülü kontrol."""
+    u = fold(user)
+    if not u:
+        return False
+    for target in [blank["answer"], *blank.get("alternatives", [])]:
+        t = fold(target)
+        if not t:
+            continue
+        if u == t:
+            return True
+        if any(ch.isdigit() for ch in t):         # sayılarda yazım toleransı yok
+            continue
+        tol = 0 if len(t) <= 3 else 1 if len(t) <= 7 else 2
+        if _lev(u, t, tol) <= tol:
+            return True
+    return False

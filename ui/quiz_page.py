@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QPushButton, QScrollArea, QSpinBox, QTextBrowser, QVBoxLayout, QWidget,
 )
 
-from core.quiz import BATCH, DIFFICULTIES, QTYPES, GenRequest
+from core.quiz import BATCH, DIFFICULTIES, QUIZ_TYPES, TYPE_LABELS, GenRequest, scaled_counts
 
 from . import style
 from .context import AppContext
@@ -79,6 +79,7 @@ class QuizPage(QWidget):
         self.review_mode = False
         self._fb_note = ""
         self._build()
+        self._update_total()
         ctx.library_changed.connect(self._refresh_topics)
         self._refresh_topics()
         self._render()
@@ -107,13 +108,29 @@ class QuizPage(QWidget):
         g.setHorizontalSpacing(12)
         g.setVerticalSpacing(8)
 
-        self.type_cb = QComboBox()
-        for k, v in QTYPES.items():
-            self.type_cb.addItem(v, k)
-        self.type_cb.setCurrentIndex(2)
-        self.count_sp = QSpinBox()
-        self.count_sp.setRange(1, 50)
-        self.count_sp.setValue(self.ctx.settings.default_count)
+        saved = self.ctx.settings.extra.get("quiz_counts") or {"mcq": self.ctx.settings.default_count,
+                                                                "fill": 3, "match": 2}
+        self.count_sps: dict[str, QSpinBox] = {}
+        counts_w = QWidget()
+        cw = QHBoxLayout(counts_w)
+        cw.setContentsMargins(0, 0, 0, 0)
+        cw.setSpacing(6)
+        tips = {"mcq": "Çoktan seçmeli (5 şık)", "fill": "Boşluk doldurma: cümledeki eksik kelimeyi yaz",
+                "match": "Eşleştirme: sol sütunu sağ sütunla eşle"}
+        for k, name in QUIZ_TYPES.items():
+            sp = QSpinBox()
+            sp.setRange(0, 50)
+            sp.setValue(int(saved.get(k, 0)))
+            sp.setPrefix(f"{name}: ")
+            sp.setToolTip(tips[k] + "\n0 = bu türden soru yok")
+            sp.setMinimumWidth(130 if k != "fill" else 175)
+            sp.valueChanged.connect(self._update_total)
+            self.count_sps[k] = sp
+            cw.addWidget(sp)
+        self.total_lbl = QLabel("")
+        self.total_lbl.setObjectName("muted")
+        cw.addWidget(self.total_lbl)
+        cw.addStretch()
         self.diff_cb = QComboBox()
         for k, v in DIFFICULTIES.items():
             self.diff_cb.addItem(k)
@@ -138,15 +155,12 @@ class QuizPage(QWidget):
             l.setObjectName("muted")
             return l
 
-        g.addWidget(lab("Soru türü"), 0, 0)
-        g.addWidget(lab("Sayı"), 0, 1)
-        g.addWidget(lab("Zorluk"), 0, 2)
-        g.addWidget(lab("Konu"), 0, 3)
-        g.addWidget(self.type_cb, 1, 0)
-        g.addWidget(self.count_sp, 1, 1)
-        g.addWidget(self.diff_cb, 1, 2)
-        g.addWidget(self.topic_le, 1, 3)
-        g.setColumnStretch(3, 1)
+        g.addWidget(lab("Soru sayıları (türe göre)"), 0, 0)
+        g.addWidget(lab("Zorluk"), 0, 1)
+        g.addWidget(counts_w, 1, 0)
+        g.addWidget(self.diff_cb, 1, 1)
+        g.addWidget(self.topic_le, 2, 0, 1, 2)
+        g.setColumnStretch(0, 1)
         row2 = QHBoxLayout()
         row2.addWidget(self.docs_btn)
         row2.addWidget(self.cont_cb)
@@ -162,7 +176,7 @@ class QuizPage(QWidget):
         row2.addStretch()
         row2.addWidget(self.review_btn)
         row2.addWidget(self.start_btn)
-        g.addLayout(row2, 2, 0, 1, 4)
+        g.addLayout(row2, 3, 0, 1, 2)
         root.addWidget(cfg)
 
         # --- durum
@@ -289,6 +303,38 @@ class QuizPage(QWidget):
         cl.addWidget(self.match_box)
         self.match_combos: list[QComboBox] = []
 
+        # boşluk doldurma: her boşluk için bir giriş kutusu
+        self.fill_box = QWidget()
+        fbx = QVBoxLayout(self.fill_box)
+        fbx.setContentsMargins(0, 0, 0, 0)
+        fhint = QLabel("Boşluklara gelecek kelimeyi yaz. Büyük/küçük harf, Türkçe karakter ve küçük yazım hataları "
+                       "sorun değil.")
+        fhint.setObjectName("muted")
+        fhint.setWordWrap(True)
+        fbx.addWidget(fhint)
+        self.fill_grid = QGridLayout()
+        self.fill_grid.setHorizontalSpacing(10)
+        self.fill_grid.setVerticalSpacing(8)
+        self.fill_grid.setColumnStretch(1, 1)
+        fbx.addLayout(self.fill_grid)
+        fr = QHBoxLayout()
+        self.fill_hint_lbl = QLabel("")
+        self.fill_hint_lbl.setObjectName("muted")
+        fr.addWidget(self.fill_hint_lbl, 1)
+        self.fill_hint_btn = QPushButton("💡 İpucu")
+        self.fill_hint_btn.setToolTip("Cevapların ilk harfini ve harf sayısını gösterir")
+        self.fill_hint_btn.clicked.connect(self.hint_fill)
+        self.fill_reveal_btn = QPushButton("Cevabı göster")
+        self.fill_reveal_btn.clicked.connect(self.reveal_fill)
+        self.fill_btn = QPushButton("Kontrol et")
+        self.fill_btn.setObjectName("primary")
+        self.fill_btn.clicked.connect(self.answer_fill)
+        for b in (self.fill_hint_btn, self.fill_reveal_btn, self.fill_btn):
+            fr.addWidget(b)
+        fbx.addLayout(fr)
+        cl.addWidget(self.fill_box)
+        self.fill_edits: list[QLineEdit] = []
+
         self.fb = QFrame()
         fbl = QVBoxLayout(self.fb)
         fbl.setContentsMargins(16, 12, 16, 12)
@@ -394,6 +440,11 @@ class QuizPage(QWidget):
     def _shortcut_next(self):
         if self.answer_te.hasFocus() or self.topic_le.hasFocus():
             return
+        q = self.current()
+        if q and q["type"] == "fill" and self.idx not in self.results:
+            focus = next((i for i, e in enumerate(self.fill_edits) if e.hasFocus()), len(self.fill_edits) - 1)
+            self._fill_enter(focus)
+            return
         if self.current() is not None and self.idx in self.results:
             self.next()
 
@@ -408,11 +459,17 @@ class QuizPage(QWidget):
         parts = [q["question"]]
         if q["type"] == "mcq":
             parts += [f"{LETTERS[i]}) {o}" for i, o in enumerate(q["options"])]
+        elif q["type"] == "fill":
+            parts[0] = self._fill_text(q)
         elif q["type"] == "match":
             parts += [f"{i + 1}. {p['left']}" for i, p in enumerate(q["pairs"])]
             parts += [f"{LETTERS[i]}) {o}" for i, o in enumerate(q["options"])]
         res = self.results.get(self.idx)
-        if res is not None and q["type"] == "match":
+        if res is not None and q["type"] == "fill":
+            parts.append("\nAnswers: " + "; ".join(f"({i + 1}) {b['answer']}" for i, b in enumerate(q["blanks"])))
+            if q.get("explanation"):
+                parts.append(q["explanation"])
+        elif res is not None and q["type"] == "match":
             parts.append("\nCorrect matches:\n" + "\n".join(f"{p['left']} → {p['right']}" for p in q["pairs"]))
             if q.get("explanation"):
                 parts.append(q["explanation"])
@@ -433,9 +490,25 @@ class QuizPage(QWidget):
         if text:
             open_translation(self.ctx, self, text, "quiz", "Soru — çeviri")
 
+    def counts(self) -> dict:
+        return {k: sp.value() for k, sp in self.count_sps.items()}
+
+    def _update_total(self, *_):
+        n = sum(self.counts().values())
+        self.total_lbl.setText(f"= {n} soru" if n else "⚠ en az 1 soru seç")
+
+    def set_counts(self, **c):
+        for k, sp in self.count_sps.items():
+            sp.setValue(int(c.get(k, 0)))
+
+    def select_doc(self, doc_id: int):
+        """Özet sayfasından gelince yalnızca o kaynaktan soru üret."""
+        self.selected_docs = {doc_id}
+        self._update_docs_btn()
+
     def _build_request(self) -> GenRequest:
         return GenRequest(
-            qtype=self.type_cb.currentData(), count=self.count_sp.value(), difficulty=self.diff_cb.currentText(),
+            counts=self.counts(), difficulty=self.diff_cb.currentText(),
             topic=self.topic_le.text().strip(),
             doc_ids=sorted(self.selected_docs) if self.selected_docs is not None else None,
             profile=self.ctx.profile, language=self.lang_cb.currentData(),
@@ -448,6 +521,11 @@ class QuizPage(QWidget):
         if self.selected_docs is not None and not self.selected_docs:
             QMessageBox.information(self, "Kaynak yok", "En az bir kaynak belge seçin.")
             return
+        if not sum(self.counts().values()):
+            QMessageBox.information(self, "Soru sayısı", "En az bir türden 1 soru seçin (Test, Boşluk ya da Eşleştirme).")
+            return
+        self.ctx.settings.extra["quiz_counts"] = self.counts()
+        self.ctx.settings.save()
         self.stop_generation(silent=True)
         self.review_mode = False
         self.questions, self.results, self.idx = [], {}, -1
@@ -460,7 +538,11 @@ class QuizPage(QWidget):
             return
         self.gen_token += 1
         token = self.gen_token
-        req = GenRequest(**{**self.req.__dict__, "count": count})
+        d = dict(self.req.__dict__)
+        if count != self.req.count and self.req.counts:
+            d["counts"] = scaled_counts(self.req.counts, count)
+        d["count"] = count
+        req = GenRequest(**d)
         self._fb_note = ""
         engine = self.ctx.engine
 
@@ -580,6 +662,42 @@ class QuizPage(QWidget):
         self.ctx.engine.record(q, json.dumps(chosen), score)
         self._render()
 
+    def answer_fill(self):
+        q = self.current()
+        if not q or q["type"] != "fill" or self.idx in self.results:
+            return
+        answers = [e.text().strip() for e in self.fill_edits]
+        if not any(answers):
+            QMessageBox.information(self, "Boş cevap", "Boşluğa bir cevap yazın ya da 'Cevabı göster'e basın.")
+            return
+        oks, score = self.ctx.engine.check_fill(q, answers)
+        self.results[self.idx] = {"answer": answers, "score": score, "oks": oks}
+        self.ctx.engine.record(q, json.dumps(answers, ensure_ascii=False), score)
+        self._render()
+
+    def reveal_fill(self):
+        q = self.current()
+        if not q or q["type"] != "fill" or self.idx in self.results:
+            return
+        answers = [e.text().strip() for e in self.fill_edits]
+        self.results[self.idx] = {"answer": answers, "score": 0.0, "oks": [False] * len(q["blanks"]),
+                                  "revealed": True}
+        self.ctx.engine.record(q, "[]", 0.0)
+        self._render()
+
+    def hint_fill(self):
+        q = self.current()
+        if not q or q["type"] != "fill":
+            return
+        hints = []
+        for i, b in enumerate(q["blanks"]):
+            a = b["answer"]
+            words = a.split()
+            shape = " ".join(w[0] + "·" * (len(w) - 1) for w in words)
+            hints.append(f"({i + 1}) {shape}  [{len(a.replace(' ', ''))} harf]")
+        self.fill_hint_lbl.setText("💡 " + "   ".join(hints))
+        q["_hinted"] = True
+
     def reveal_match(self):
         q = self.current()
         if not q or q["type"] != "match" or self.idx in self.results:
@@ -691,12 +809,14 @@ class QuizPage(QWidget):
         self.opts_box.hide()
         self.open_box.hide()
         self.match_box.hide()
+        self.fill_box.hide()
         if q is None:
             self._show_widgets(False)
             if self.task:
                 self.empty_lbl.setText("Sorular hazırlanıyor…\n\nKaynak metinler seçiliyor ve yapay zeka soruları yazıyor.")
             elif self.ctx.retriever.db.list_documents():
-                self.empty_lbl.setText("Başlamak için soru türünü, sayısını ve zorluğu seçip “Başlat”a basın.\n\n"
+                self.empty_lbl.setText("Başlamak için her türden kaç soru istediğini (Test, Boşluk doldurma, "
+                                       "Eşleştirme) ve zorluğu seçip “Başlat”a basın.\n\n"
                                        "İpucu: Konu alanını boş bırakırsanız sorular kütüphanenin tamamından, "
                                        "henüz sorulmamış bölümlere öncelik verilerek üretilir.")
             else:
@@ -706,13 +826,16 @@ class QuizPage(QWidget):
             return
 
         self._show_widgets(True)
-        self.badge_type.setText({"mcq": "Çoktan seçmeli", "match": "Eşleştirme"}.get(q["type"], "Klasik"))
+        self.badge_type.setText(TYPE_LABELS.get(q["type"], "Klasik"))
         self.badge_topic.setText(q.get("topic") or "Genel")
         self.badge_topic.setVisible(bool(q.get("topic")))
         diff = self.req.difficulty if self.req else ("Tekrar" if self.review_mode else "")
         self.badge_diff.setText(diff)
+        self.q_lbl.setTextFormat(Qt.RichText if q["type"] == "fill" else Qt.PlainText)
         self.q_lbl.setText(q["question"])
         res = self.results.get(self.idx)
+        if q["type"] == "fill":
+            self.q_lbl.setText(self._fill_html(q, res))
 
         if q["type"] == "mcq":
             self.opts_box.show()
@@ -738,6 +861,8 @@ class QuizPage(QWidget):
                 self._render_mcq_feedback(q, res)
         elif q["type"] == "match":
             self._render_match(q, res)
+        elif q["type"] == "fill":
+            self._render_fill(q, res)
         else:
             self.open_box.show()
             answered = res is not None
@@ -809,6 +934,96 @@ class QuizPage(QWidget):
             self.fb_lbl.setText(head + body + self._src_line(q))
             self._set_sources(q)
             self.fb.show()
+
+    @staticmethod
+    def _fill_text(q: dict) -> str:
+        parts = q["question"].split("____")
+        out = parts[0]
+        for i, p in enumerate(parts[1:]):
+            out += f"({i + 1}) ______" + p
+        return out
+
+    def _fill_html(self, q: dict, res: dict | None) -> str:
+        parts = [esc(p) for p in q["question"].split("____")]
+        out = parts[0]
+        for i, p in enumerate(parts[1:]):
+            if res is None:
+                blank = f"<span style='color:{style.ACCENT}; font-weight:600'>({i + 1}) ________</span>"
+            else:
+                ok = res["oks"][i] if i < len(res["oks"]) else False
+                color = style.OK if ok else style.BAD
+                blank = (f"<span style='color:{color}; font-weight:700; text-decoration:underline'>"
+                         f"{esc(q['blanks'][i]['answer'])}</span>")
+            out += blank + p
+        return out
+
+    def _render_fill(self, q: dict, res: dict | None):
+        self.fill_box.show()
+        while self.fill_grid.count():
+            it = self.fill_grid.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        self.fill_edits = []
+        answered = res is not None
+        for i, b in enumerate(q["blanks"]):
+            lab = QLabel(f"<b>({i + 1})</b>")
+            e = QLineEdit()
+            e.setPlaceholderText("cevabın…")
+            e.setMinimumHeight(36)
+            mark = QLabel("")
+            if answered:
+                e.setText(res["answer"][i] if i < len(res["answer"]) else "")
+                e.setReadOnly(True)
+                ok = res["oks"][i] if i < len(res["oks"]) else False
+                if res.get("revealed"):
+                    mark.setText(f"→ <b>{esc(b['answer'])}</b>")
+                elif ok:
+                    mark.setText(f"<span style='color:{style.OK}; font-weight:600'>✓ {esc(b['answer'])}</span>")
+                else:
+                    mark.setText(f"<span style='color:{style.BAD}; font-weight:600'>✗ doğrusu: "
+                                 f"{esc(b['answer'])}</span>")
+            else:
+                e.returnPressed.connect(lambda i=i: self._fill_enter(i))
+            self.fill_grid.addWidget(lab, i, 0)
+            self.fill_grid.addWidget(e, i, 1)
+            self.fill_grid.addWidget(mark, i, 2)
+            self.fill_edits.append(e)
+        self.fill_grid.setColumnStretch(2, 1 if answered else 0)
+        for b in (self.fill_btn, self.fill_reveal_btn, self.fill_hint_btn):
+            b.setVisible(not answered)
+        self.fill_hint_lbl.setText("")
+        if not answered:
+            if self.fill_edits:
+                self.fill_edits[0].setFocus()
+            return
+        n = len(q["blanks"])
+        right = sum(res["oks"])
+        if res.get("revealed"):
+            self.fb.setObjectName("feedbackMid")
+            head = "<h3>Doğru cevap</h3>"
+        else:
+            s = res["score"]
+            self.fb.setObjectName("feedbackOk" if s >= 1 else "feedbackMid" if s > 0 else "feedbackBad")
+            color = style.OK if s >= 1 else "#a16207" if s > 0 else style.BAD
+            head = (f"<h3 style='color:{color}'>✓ Doğru!</h3>" if s >= 1 else
+                    f"<h3 style='color:{color}'>{right} / {n} boşluk doğru</h3>")
+        self.fb.style().unpolish(self.fb)
+        self.fb.style().polish(self.fb)
+        body = ""
+        alts = [f"({i + 1}) {', '.join(b['alternatives'])}" for i, b in enumerate(q["blanks"]) if b.get("alternatives")]
+        if alts:
+            body += f"<p style='color:{style.MUTED}'>Kabul edilen diğer cevaplar: {esc('; '.join(alts))}</p>"
+        if q.get("explanation"):
+            body += f"<p>{esc(q['explanation'])}</p>"
+        self.fb_lbl.setText(head + body + self._src_line(q))
+        self._set_sources(q)
+        self.fb.show()
+
+    def _fill_enter(self, i: int):
+        if i + 1 < len(self.fill_edits):
+            self.fill_edits[i + 1].setFocus()
+        else:
+            self.answer_fill()
 
     def _set_sources(self, q: dict):
         srcs = q.get("sources") or []

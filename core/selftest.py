@@ -128,6 +128,31 @@ def run(pdf: str | None, out: str) -> int:
 
     _step(results, "Arayüz + PDF dışa aktarma", gui)
 
+    def clients():
+        """Paketlenmiş sürümde her sağlayıcının SDK istemcisi gerçekten kurulabiliyor mu (anahtar gerekmez)."""
+        from .llm import LLMClient
+        out = {}
+        for p in ("anthropic", "openai", "gemini"):
+            st = Settings()
+            setattr(st, f"{p}_api_key", "test-key")
+            st.provider = p
+            c = LLMClient(st, p)
+            out[p] = type(getattr(c, "_client", None) or c).__name__
+        return out
+
+    _step(results, "Yapay zekâ istemcileri (Claude/OpenAI/Gemini) kurulumu", clients)
+
+    def fill_logic():
+        from . import normalize as nz
+        sent, bl = nz.blanks({"question": "DKA'da ilk tedavi [1] ve ardından ____ infüzyonudur.",
+                              "blanks": ["izotonik sıvı", {"answer": "insülin", "alternatives": ["insulin"]}]})
+        oks = [nz.blank_ok("Izotonik sivi", bl[0]), nz.blank_ok("insulın", bl[1]), not nz.blank_ok("potasyum", bl[1])]
+        if not all(oks):
+            raise RuntimeError(f"Boşluk kontrolü hatalı: {oks}")
+        return {"sentence": sent, "checks": oks}
+
+    _step(results, "Boşluk doldurma kontrolü", fill_logic)
+
     def update_check():
         from . import updater
         real = updater.__version__
@@ -176,9 +201,26 @@ def run(pdf: str | None, out: str) -> int:
         ce = CaseEngine(db, retr2, qe, factory)
 
         def quiz(qe=qe):
-            qs = qe.generate(GenRequest(qtype="mixed", count=3, difficulty="Orta", topic="diyabetik ketoasidoz"))
-            return {"questions": len(qs), "types": [q["type"] for q in qs], "model": qs[0].get("model") if qs else "",
-                    "sample": qs[0]["question"][:160] if qs else ""}
+            qs = qe.generate(GenRequest(counts={"mcq": 2, "fill": 2, "match": 1}, difficulty="Orta",
+                                        topic="diyabetik ketoasidoz"))
+            types = [q["type"] for q in qs]
+            if "fill" not in types:
+                raise RuntimeError(f"Boşluk doldurma sorusu gelmedi: {types}")
+            f = next(q for q in qs if q["type"] == "fill")
+            return {"questions": len(qs), "types": types, "model": qs[0].get("model") if qs else "",
+                    "stems": [q["question"][-70:] for q in qs if q["type"] == "mcq"],
+                    "fill": f["question"][:120], "fill_answers": [b["answer"] for b in f["blanks"]]}
+
+        def summary():
+            from .summary import TEMPLATES, SummaryEngine
+            se = SummaryEngine(db, retr2, factory)
+            doc = db.list_documents()[0]
+            src = se.build_source(doc["id"], "1-3")
+            md = "".join(se.run(src, TEMPLATES["detayli"]["prompt"], "diyabetik ketoasidoz"))
+            if len(md) < 300:
+                raise RuntimeError(f"Özet çok kısa: {md[:200]!r}")
+            return {"pdf_packet": bool(src.packets[0].pdf), "chars": len(md), "has_table": "|---" in md.replace(" ", ""),
+                    "headings": [l[:50] for l in md.splitlines() if l.startswith("#")][:6], "model": se.last_label}
 
         def case(ce=ce):
             r = ce.generate(CaseRequest(topic="diyabetik ketoasidoz", level="Öğrenci", paraclinic=True, test_count=3))
@@ -272,7 +314,8 @@ def run(pdf: str | None, out: str) -> int:
                     "feedback": g.get("feedback", "")[:120]}
 
         # Gerçek kullanım gibi adımlar arasında kısa ara (ücretsiz katmanın dakikalık sınırı)
-        steps = [(f"{prov}: Ayarlar > Test düğmesi", settings_test), (f"{prov}: quiz üretimi", quiz),
+        steps = [(f"{prov}: Ayarlar > Test düğmesi", settings_test), (f"{prov}: quiz üretimi (test + boşluk + eşleştirme)", quiz),
+                 (f"{prov}: PDF sayfalarından özet (tablolu)", summary),
                          (f"{prov}: İngilizce soru + çeviri + kelime tanımı", english_and_translate),
                          (f"{prov}: tekrar quizi (5 test + 5 eşleştirme) + kısa cevap puanı", review_and_short_answer), (f"{prov}: klasik cevap puanlama", grade),
                          (f"{prov}: vaka üretimi (paraklinik + test)", case),

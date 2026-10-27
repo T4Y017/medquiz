@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import datetime as dt
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QKeyEvent
+from urllib.parse import quote, unquote
+
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices, QKeyEvent
 from PySide6.QtWidgets import (
     QComboBox, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit,
     QPushButton, QTextBrowser, QVBoxLayout, QWidget,
@@ -14,6 +16,7 @@ from core.config import PROVIDERS
 from core.quiz import source_label
 
 from .context import AppContext
+from .flow import FlowLayout
 from .translate_ui import attach_menu, open_translation
 
 
@@ -29,6 +32,33 @@ class _Input(QPlainTextEdit):
             self.on_send()
             return
         super().keyPressEvent(e)
+
+
+# Hazır işlemler: (etiket, ipucu, komut). {X} = yazdığın konu.
+ACTIONS = [
+    ("📋 Özetle", "Konuyu kaynaklardan madde madde özetler",
+     "{X} konusunu kaynaklara dayanarak özetle: tanım, nedenler, bulgular, tanı, tedavi (dozlarla), komplikasyonlar. "
+     "Kısa maddeler kullan."),
+    ("📊 Karşılaştır", "Örn. 'astım ve KOAH' yaz → karşılaştırma tablosu",
+     "{X} için kaynaklara dayanan bir KARŞILAŞTIRMA TABLOSU hazırla (Markdown tablo). Satırlar: tanım, etiyoloji, "
+     "klinik, tanı, tedavi, prognoz; uygun olanı ekle. Tablonun altına 3 maddelik 'akılda kalsın' notu yaz."),
+    ("🔍 Ayırıcı tanı", "Bir bulgu ya da tablo yaz → ayırıcı tanı tablosu",
+     "{X} için ayırıcı tanıyı tablo hâlinde ver: | Tanı | Ayırt ettiren bulgu | Tanı testi |. En olasıdan başla; "
+     "acil dışlanması gerekenleri ⚠ ile işaretle."),
+    ("💊 Tedavi ve dozlar", "Tedavi basamakları, ilaçlar ve dozlar",
+     "{X} tedavisini basamaklar hâlinde anlat ve ilaçları tablo olarak ver: | İlaç | Doz (yetişkin / çocuk, mg/kg) | "
+     "Not |. Yalnızca kaynakta geçen dozları yaz; kaynakta yoksa açıkça belirt."),
+    ("🧒 Basitçe anlat", "Konuyu en basit hâliyle, benzetmeyle anlatır",
+     "{X} konusunu tıp öğrencisine ilk kez anlatır gibi basitçe açıkla: bir benzetme kullan, mekanizmayı adım adım "
+     "anlat, sonunda 3 anahtar cümle ver."),
+    ("🎯 Beni sına", "Konuda sana tek tek soru sorar, cevabını değerlendirir",
+     "{X} konusunda beni sına: kaynaklara dayanarak bana TEK TEK toplam 5 soru sor (kolaydan zora). Şimdi yalnızca "
+     "ilk soruyu sor ve cevabımı bekle. Her cevabımı değerlendirip sonraki soruya geç; sonunda puanımı söyle."),
+]
+
+EXAMPLES = ["Akut pankreatitte Ranson kriterleri nelerdir?",
+            "Astım ve KOAH'ı tablo hâlinde karşılaştır",
+            "Çocukta allerjik rinit tedavisinde ilk basamak nedir?"]
 
 
 def _when(ts: float) -> str:
@@ -114,10 +144,33 @@ class ChatPage(QWidget):
         head.addWidget(self.quiz_btn)
         root.addLayout(head)
 
+        scope = QHBoxLayout()
+        sc_l = QLabel("Kaynak:")
+        sc_l.setObjectName("muted")
+        scope.addWidget(sc_l)
+        self.scope_cb = QComboBox()
+        self.scope_cb.setMinimumWidth(320)
+        self.scope_cb.setToolTip("Asistan yalnızca seçtiğin kaynakta arasın (örn. tek bir kitap ya da makale)")
+        scope.addWidget(self.scope_cb)
+        scope.addStretch()
+        root.addLayout(scope)
+
         self.view = QTextBrowser()
-        self.view.setOpenExternalLinks(True)
+        self.view.setOpenLinks(False)
+        self.view.anchorClicked.connect(self._link)
         attach_menu(self.view, self.ctx, "sohbet", "Sohbet — çeviri")
         root.addWidget(self.view, 1)
+
+        chip_w = QWidget()
+        chips = FlowLayout(chip_w)
+        for label, tip, tmpl in ACTIONS:
+            b = QPushButton(label)
+            b.setObjectName("chip")
+            b.setCursor(Qt.PointingHandCursor)
+            b.setToolTip(tip + "\nKutuya konuyu yazıp bu düğmeye bas (boşsa son konuyu kullanır).")
+            b.clicked.connect(lambda _=False, l=label, t=tmpl: self.action(l, t))
+            chips.addWidget(b)
+        root.addWidget(chip_w)
 
         row = QHBoxLayout()
         self.input = _Input(self.send)
@@ -137,6 +190,8 @@ class ChatPage(QWidget):
         outer.addWidget(main, 1)
 
         ctx.settings_changed.connect(self._fill_ai)
+        ctx.library_changed.connect(self._fill_scope)
+        self._fill_scope()
         ctx.profile_changed.connect(lambda _: (self.new_chat(), self.refresh_list()))
         self._fill_ai()
         self.refresh_list()
@@ -162,6 +217,41 @@ class ChatPage(QWidget):
         if p and p != self.ctx.settings.provider:
             self.ctx.settings.provider = p
             self.ctx.apply_settings()
+
+    def _fill_scope(self):
+        cur = self.scope_cb.currentData()
+        self.scope_cb.blockSignals(True)
+        self.scope_cb.clear()
+        self.scope_cb.addItem("📚 Tüm kütüphane", None)
+        for d in self.ctx.db.list_documents():
+            self.scope_cb.addItem(d["title"][:70], d["id"])
+        i = self.scope_cb.findData(cur)
+        self.scope_cb.setCurrentIndex(max(0, i))
+        self.scope_cb.blockSignals(False)
+
+    def _link(self, url: QUrl):
+        if url.scheme() == "ask":
+            self.input.setPlainText(unquote(url.path()))
+            self.send()
+        else:
+            QDesktopServices.openUrl(url)
+
+    def action(self, label: str, template: str):
+        if self.busy:
+            return
+        topic = " ".join(self.input.toPlainText().split()) or self.last_topic()
+        if not topic:
+            self.input.setFocus()
+            self.input.setPlaceholderText(f"Önce konuyu yaz, sonra “{label}” düğmesine bas — örn. akut otitis media")
+            return
+        self.input.clear()
+        self.send(prompt=template.replace("{X}", topic), display=f"{label}: {topic}", topic=topic)
+
+    def last_topic(self) -> str:
+        for m in reversed(self.history):
+            if m["role"] == "user":
+                return m.get("topic") or m["content"][:120]
+        return ""
 
     # ---------------------------------------------------------------- geçmiş
     def refresh_list(self):
@@ -220,11 +310,14 @@ class ChatPage(QWidget):
     def _persist(self):
         if not self.history:
             return
-        first = next((m["content"] for m in self.history if m["role"] == "user"), "Sohbet")
+        first = next((m.get("display") or m["content"] for m in self.history if m["role"] == "user"), "Sohbet")
         title = " ".join(first.split())[:70]
         msgs = []
         for m in self.history:
             d = {"role": m["role"], "content": m["content"]}
+            for k in ("display", "topic"):
+                if m.get(k):
+                    d[k] = m[k]
             if m.get("model"):
                 d["model"] = m["model"]
             if m.get("sources"):
@@ -243,7 +336,7 @@ class ChatPage(QWidget):
     def last_user_question(self) -> str:
         for m in reversed(self.history):
             if m["role"] == "user":
-                return m["content"]
+                return m.get("topic") or m["content"]
         return ""
 
     def clear(self):
@@ -254,17 +347,21 @@ class ChatPage(QWidget):
         self.send_btn.setEnabled(not on)
         self.send_btn.setText("…" if on else "Gönder")
 
-    def send(self):
-        text = self.input.toPlainText().strip()
+    def send(self, prompt: str | None = None, display: str = "", topic: str = ""):
+        text = prompt or self.input.toPlainText().strip()
         if not text or self.busy:
             return
         if not self.ctx.settings.has_any_key:
             QMessageBox.warning(self, "API anahtarı gerekli", "Lütfen önce Ayarlar sekmesinden API anahtarınızı girin.")
             return
-        self.input.clear()
+        if not prompt:
+            self.input.clear()
         prior = [{"role": m["role"], "content": m["content"]} for m in self.history
                  if m["content"] and not m["content"].lstrip().startswith("⚠️")]
-        self.history.append({"role": "user", "content": text})
+        um = {"role": "user", "content": text}
+        if display:
+            um["display"], um["topic"] = display, topic
+        self.history.append(um)
         self.history.append({"role": "assistant", "content": "", "sources": []})
         self._persist()
         self._set_busy(True)
@@ -273,9 +370,12 @@ class ChatPage(QWidget):
         engine = self.ctx.engine
         target = self.history[-1]
         chat_at_start = self.chat_id
+        did = self.scope_cb.currentData()
+        doc_ids = [did] if did is not None else None
+        search_q = topic or None
 
         def job(progress, task):
-            stream, hits, llm = engine.chat_stream(text, prior)
+            stream, hits, llm = engine.chat_stream(text, prior, doc_ids=doc_ids, search_query=search_q)
             progress(("sources", hits))
             try:
                 for piece in stream:
@@ -316,16 +416,27 @@ class ChatPage(QWidget):
     # ------------------------------------------------------------------ çiz
     def _render(self):
         if not self.history:
+            ex = "".join(f"<p><a href='ask:{quote(e)}' style='color:#0f766e; text-decoration:none'>💬 {e}</a></p>"
+                         for e in EXAMPLES)
             self.view.setHtml(
-                "<div style='color:#64748b; padding:40px; text-align:center'>"
-                "<h2>Merhaba 👋</h2><p>Kütüphanene eklediğin kaynaklar hakkında soru sorabilirsin.</p>"
-                "<p><i>Örnek: “Akut pankreatitte Ranson kriterleri nelerdir?”</i></p>"
-                "<p style='font-size:small'>Sohbetler otomatik kaydedilir; soldan eskilerine dönebilirsin.</p></div>")
+                "<div style='color:#475569; padding:24px 40px'>"
+                "<h2>Kaynaklarınla konuş 👋</h2>"
+                "<p>Asistan cevabı <b>Kütüphane'ndeki kaynaklardan</b> bulur ve hangi sayfadan aldığını [K1] gibi "
+                "gösterir. Yukarıdan tek bir kaynak da seçebilirsin.</p>"
+                "<h3>Nasıl kullanılır?</h3><ul>"
+                "<li><b>Serbest soru:</b> aşağıya yaz, Enter'a bas.</li>"
+                "<li><b>Hazır işlemler:</b> kutuya sadece konuyu yaz (örn. <i>akut otitis media</i>), sonra "
+                "📊 Karşılaştır, 🔍 Ayırıcı tanı, 💊 Tedavi ve dozlar… düğmelerinden birine bas.</li>"
+                "<li><b>🎯 Beni sına:</b> konuda sana tek tek soru sorar, cevabını değerlendirir.</li>"
+                "<li>Cevaptaki bilmediğin kelimeyi seçip sağ tıkla → çevir / kelime havuzuna ekle.</li></ul>"
+                "<h3>Denemek için tıkla</h3>" + ex +
+                "<p style='font-size:small; color:#94a3b8'>Sohbetler otomatik kaydedilir; soldan eskilerine "
+                "dönebilirsin.</p></div>")
             return
         md = []
         for m in self.history:
             if m["role"] == "user":
-                md.append(f"#### 🧑 Sen\n\n{m['content']}\n")
+                md.append(f"#### 🧑 Sen\n\n{m.get('display') or m['content']}\n")
             else:
                 body = m["content"] or ("_Kaynaklar aranıyor ve yanıt yazılıyor…_" if self.busy else "")
                 model = f" · _{m['model']}_" if m.get("model") else ""

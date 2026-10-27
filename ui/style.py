@@ -34,6 +34,9 @@ QLabel#brandSub {{ color: #99f6e4; font-size: {font_pt - 2}pt; padding: 0 16px 1
 QListWidget#nav {{ background: transparent; border: none; outline: none; }}
 QListWidget#nav::item {{ color: #d1fae5; padding: 11px 18px; border-radius: 8px; margin: 2px 10px; }}
 QListWidget#nav::item:hover {{ background: #115e59; }}
+QListWidget#nav[compact="true"]::item {{ padding: 11px 0px; margin: 2px 8px; font-size: {font_pt + 3}pt; }}
+QToolButton#sideToggle {{ color: #99f6e4; background: transparent; border: none; font-size: {font_pt + 4}pt; padding: 4px 8px; margin-top: 12px; }}
+QToolButton#sideToggle:hover {{ color: white; background: #115e59; border-radius: 6px; }}
 QListWidget#nav::item:selected {{ background: #14b8a6; color: white; font-weight: 600; }}
 QLabel#sideLabel {{ color: #99f6e4; font-size: {font_pt - 2}pt; padding: 0 18px; }}
 QWidget#sidebar QComboBox {{ margin: 4px 14px 16px 14px; }}
@@ -56,6 +59,9 @@ QPushButton:disabled {{ color: #94a3b8; background: #f1f5f9; border-color: {LINE
 QPushButton#primary {{ background: {ACCENT}; color: white; border: none; font-weight: 600; padding: 9px 20px; }}
 QPushButton#primary:hover {{ background: {ACCENT_HOVER}; }}
 QPushButton#primary:disabled {{ background: #94a3b8; color: white; }}
+QPushButton#chip {{ background: #f0fdfa; color: {ACCENT}; border: 1px solid #99f6e4; border-radius: 14px;
+    padding: 5px 12px; }}
+QPushButton#chip:hover {{ background: {ACCENT_SOFT}; border-color: {ACCENT}; }}
 QPushButton#danger {{ color: {BAD}; }}
 QPushButton#danger:hover {{ background: {BAD_SOFT}; border-color: {BAD}; }}
 

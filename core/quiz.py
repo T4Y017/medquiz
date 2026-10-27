@@ -24,9 +24,27 @@ DIFFICULTIES = {
 }
 
 QTYPES = {"mcq": "Çoktan seçmeli", "open": "Klasik (uzun cevaplı)", "mixed": "Karışık"}
+# Quiz ekranında seçilebilen türler (klasik soru quizden kaldırıldı; vakalarda ve eski kayıtlarda duruyor)
+QUIZ_TYPES = {"mcq": "Test", "fill": "Boşluk doldurma", "match": "Eşleştirme"}
+TYPE_LABELS = {"mcq": "Çoktan seçmeli", "fill": "Boşluk doldurma", "match": "Eşleştirme", "open": "Klasik"}
 
 BATCH = 5
 
+# Çoktan seçmeli soru kökü kalıpları — her turda farklı bir karışım istenir ki sorular tekdüze olmasın.
+STEM_STYLES = [
+    "vaka + 'Bu hasta için en olası tanı aşağıdakilerden hangisidir?'",
+    "vaka + 'Bu aşamada yapılması gereken en uygun ilk adım / sonraki basamak hangisidir?'",
+    "'... en sık nedeni aşağıdakilerden hangisidir?'",
+    "olumsuz kök: '... aşağıdakilerden hangisi ... DEĞİLDİR?' ya da '... hangisi BEKLENMEZ?'",
+    "öncüllü soru: I, II, III (ve gerekirse IV) ifadeleri ver; şıklar 'Yalnız I', 'I ve II', 'I, II ve III' gibi olsun",
+    "mekanizma: '... etkisini hangi mekanizmayla gösterir?' ya da 'Patogenezde temel olay hangisidir?'",
+    "'Tanıda en değerli / altın standart test hangisidir?'",
+    "'Tedavide ilk tercih edilecek ilaç/yöntem hangisidir?' (gerekirse doz ile)",
+    "'... en sık / en ciddi komplikasyonu hangisidir?'",
+    "'Aşağıdaki bulgulardan hangisi ... lehine / ... ayırt ettirici özelliktir?'",
+    "eşleşme kontrolü: 'Aşağıdaki ilaç–yan etki (ya da hastalık–bulgu) eşleştirmelerinden hangisi YANLIŞTIR?'",
+    "laboratuvar/görüntüleme sonucu yorumlama: değerleri ver, 'Bu tablo en çok hangisiyle uyumludur?'",
+]
 SYSTEM_QUIZ = """Sen tıp eğitimi için deneyimli bir soru yazarı ve öğretim üyesisin.
 Görevin, sana verilen KAYNAK METİNLERE dayanarak yüksek kaliteli Türkçe sınav soruları hazırlamak.
 
@@ -35,6 +53,11 @@ Kurallar:
   bilgiyi doğru cevap yapma. Çeldiricilerde genel tıp bilgisini kullanabilirsin ama hepsi açıkça yanlış olmalı.
 - Çoktan seçmeli sorular TUS formatında 5 şıklı olmalı, tek bir kesin doğru cevap olmalı.
   Çeldiriciler makul, aynı kategoriden ve benzer uzunlukta olmalı. "Hepsi/Hiçbiri" şıkkı kullanma.
+- SORU KÖKLERİNİ ÇEŞİTLENDİR. Her soruyu "...hangisi doğrudur?" diye sorma; bir turda en fazla bir soru
+  "doğrudur/yanlıştır" kalıbında olabilir. TUS/USMLE'deki gibi farklı kalıplar kullan (en olası tanı, bir sonraki
+  en uygun adım, en sık neden, mekanizma, beklenmeyen bulgu, olumsuz kök "...değildir?", öncüllü I-II-III
+  soruları, en değerli tanı testi, ilk tercih tedavi, komplikasyon, ilaç yan etkisi/etkileşimi...).
+  Olumsuz köklerde olumsuz kelimeyi BÜYÜK HARFLE yaz (DEĞİLDİR, BEKLENMEZ, YANLIŞTIR).
 - Klasik sorular düşünmeyi gerektirmeli (açıklayınız, karşılaştırınız, yaklaşımı tartışınız...).
   Örnek cevap kapsamlı olmalı ve puanlama için 3-6 anahtar nokta içermeli.
 - Açıklamalar öğretici olsun: doğru cevabın neden doğru, önemli çeldiricilerin neden yanlış olduğunu söyle.
@@ -65,6 +88,16 @@ JSON_SPEC = """Şu JSON yapısını döndür:
   ]
 }
 Şıklarda "A)", "B)" gibi harf önekleri kullanma."""
+
+FILL_SPEC = """Boşluk doldurma sorusu biçimi:
+{"type": "fill", "topic": "kısa konu",
+ "question": "Kaynaktaki önemli bir bilgiyi anlatan tam cümle; eksik bırakılan yerler ____ (dört alt çizgi).",
+ "blanks": [{"answer": "boşluğa gelecek kısa doğru cevap", "alternatives": ["kabul edilecek eş anlamlı/kısaltma"]}],
+ "explanation": "kısa açıklama", "source_keys": ["K1"]}
+Kurallar: her soruda 1-2 boşluk olsun ve "blanks" listesindeki öğe sayısı cümledeki ____ sayısına eşit olsun.
+Boşluğa 1-3 kelimelik, kesin ve tek doğru cevabı olan ANAHTAR bilgi gelsin (ilaç adı, doz, bulgu, sayı, terim,
+etken); "ve", "ile" gibi önemsiz sözcükleri boşaltma. Cümle cevabı ele vermesin ama tek başına anlaşılır olsun.
+Eş anlamlıları, kısaltmaları, Türkçe/İngilizce karşılıkları "alternatives" içine yaz."""
 
 LANG_RULE = {
     "tr": "",
@@ -102,7 +135,10 @@ SYSTEM_CHAT = """Sen tıp öğrencilerine ve sağlık çalışanlarına yardımc
 Kullanıcının sorusunu ÖNCELİKLE verilen kaynak metinlere dayanarak Türkçe yanıtla.
 - Kaynaklardan aldığın bilgiyi [K1], [K2] gibi etiketlerle belirt.
 - Kaynaklarda cevap yoksa bunu açıkça söyle; genel tıp bilgisi eklersen "(kaynak dışı genel bilgi)" diye işaretle.
-- Kısa ve düzenli yaz; gerekirse madde işaretleri kullan.
+- Kısa ve düzenli yaz; Markdown kullan: başlık, madde işareti, **kalın**. Karşılaştırma, sınıflama, doz ya da
+  ayırıcı tanı gibi yapılandırılabilir bilgilerde gerçek Markdown TABLOSU kullan (| sütun | sütun |).
+- Kullanıcı seni sınamanı isterse: her mesajda YALNIZCA BİR soru sor, cevabını bekle; gelen cevabı kısaca
+  değerlendir (doğru/eksik/yanlış + kısa açıklama), sonra bir sonraki soruya geç. Cevabı soruyla birlikte verme.
 - Bu bir eğitim aracıdır: kişisel teşhis/tedavi isteyenlere bir hekime başvurmalarını hatırlat."""
 
 
@@ -132,7 +168,23 @@ class GenRequest:
     doc_ids: list[int] | None = None
     profile: str = ""
     language: str = "tr"       # "tr" | "en"
+    counts: dict | None = None  # {"mcq": 5, "fill": 3, "match": 2}; verilirse qtype/count yerine geçer
 
+    def __post_init__(self):
+        if self.counts:
+            self.counts = {k: max(0, int(v)) for k, v in self.counts.items() if k in QUIZ_TYPES and int(v) > 0}
+            self.count = sum(self.counts.values()) or 1
+
+
+def scaled_counts(counts: dict, n: int) -> dict:
+    """Sürekli mod için tür oranlarını koruyarak n soruluk yeni dağılım üretir."""
+    total = sum(counts.values()) or 1
+    out = {k: int(v * n / total) for k, v in counts.items()}
+    for k in sorted(counts, key=lambda k: -(counts[k] * n / total - out[k])):
+        if sum(out.values()) >= n:
+            break
+        out[k] += 1
+    return {k: v for k, v in out.items() if v > 0}
 
 def make_llm(factory, task: str):
     """Fabrika görev türünü (heavy/light) destekliyorsa iletir; eski tek argümansız fabrikalarla da çalışır."""
@@ -156,22 +208,33 @@ class QuizEngine:
             raise LLMError("Kütüphane boş. Önce Kütüphane sekmesinden PDF, Word, metin veya web sayfası ekleyin.")
         llm = make_llm(self.llm_factory, "heavy")
         out: list[dict] = []
-        remaining = max(1, req.count)
+        want = dict(req.counts) if req.counts else None
+        remaining = sum(want.values()) if want else max(1, req.count)
         recent = self.db.recent_question_texts(40)
         attempts = 0
         empty_streak = 0
         last_problem = ""
-        while remaining > 0 and attempts < req.count + 3:
+        while remaining > 0 and attempts < remaining + len(out) + 3:
             attempts += 1
             if should_stop and should_stop():
                 break
             n = min(BATCH, remaining)
+            plan = self._plan(want, n) if want else None
             ctx = self.retriever.pick_context(req.topic, n_chunks=4 if n <= 3 else 6,
                                               doc_ids=req.doc_ids, rng=self.rng)
             if not ctx:
                 raise LLMError(f"'{req.topic}' konusunda kütüphanede ilgili içerik bulunamadı. "
                                "Farklı bir konu yazın ya da konu alanını boş bırakın.")
-            batch, problem = self._generate_batch(llm, ctx, n, req, recent + [q["question"] for q in out])
+            batch, problem = self._generate_batch(llm, ctx, n, req, recent + [q["question"] for q in out], plan)
+            if want:
+                kept = []
+                for q in batch:
+                    if want.get(q["type"], 0) > 0:
+                        want[q["type"]] -= 1
+                        kept.append(q)
+                if batch and not kept:
+                    problem = "(Yanıttaki sorular istenen türde değildi.)"
+                batch = kept
             if not batch:
                 empty_streak += 1
                 last_problem = problem
@@ -186,7 +249,7 @@ class QuizEngine:
                                                 q["chunk_ids"], req.profile)
             self.retriever.mark_used([c["id"] for c in ctx])
             out.extend(batch)
-            remaining -= len(batch)
+            remaining = sum(want.values()) if want else remaining - len(batch)
             if on_batch:
                 on_batch(batch)
         if not out and not (should_stop and should_stop()):
@@ -196,7 +259,31 @@ class QuizEngine:
                 "veya konu alanına daha belirgin bir konu yazın.")
         return out
 
-    def _type_instruction(self, qtype: str, n: int) -> str:
+    def _stem_hint(self, n: int) -> str:
+        styles = self.rng.sample(STEM_STYLES, k=min(len(STEM_STYLES), max(2, n)))
+        return ("Çoktan seçmeli soruların köklerini çeşitlendir; bu turda sırayla şu kalıpları kullan "
+                "(kaynağa uymayanı benzer başka bir kalıpla değiştir):\n" + "\n".join(f"  • {x}" for x in styles))
+
+    @staticmethod
+    def _plan(want: dict, n: int) -> dict:
+        """Bu turda hangi türden kaç soru isteneceği: kalanlarla orantılı, her tür sırayla gelsin."""
+        left = {k: v for k, v in want.items() if v > 0}
+        plan = {k: 0 for k in left}
+        keys = sorted(left, key=lambda k: -left[k])
+        i = 0
+        while sum(plan.values()) < n and any(plan[k] < left[k] for k in keys):
+            k = keys[i % len(keys)]
+            if plan[k] < left[k]:
+                plan[k] += 1
+            i += 1
+        return {k: v for k, v in plan.items() if v > 0}
+
+    def _type_instruction(self, qtype: str, n: int, plan: dict | None = None) -> str:
+        if plan:
+            names = {"mcq": 'çoktan seçmeli (type="mcq", 5 şık, tek doğru)',
+                     "fill": 'boşluk doldurma (type="fill")', "match": 'eşleştirme (type="match", her biri 4-5 çift)'}
+            parts = [f"{v} adet {names[k]}" for k, v in plan.items()]
+            return f"Toplam {sum(plan.values())} soru yaz: " + " ve ".join(parts) + ". Başka türde soru yazma."
         if qtype == "mcq":
             return f"Tam olarak {n} adet çoktan seçmeli (type=\"mcq\") soru yaz."
         if qtype == "open":
@@ -206,7 +293,7 @@ class QuizEngine:
                 f"{n_open} adet klasik uzun cevaplı (type=\"open\").")
 
     def _generate_batch(self, llm: LLMClient, ctx: list[dict], n: int, req: GenRequest,
-                        avoid: list[str]) -> list[dict]:
+                        avoid: list[str], plan: dict | None = None) -> list[dict]:
         context, keymap = format_context(ctx)
         avoid_txt = "\n".join(f"- {q[:160]}" for q in avoid[-25:]) or "(yok)"
         topic_txt = f"Odak konu: {req.topic}\n" if req.topic.strip() else "Konu: kaynak metinlerdeki en önemli, sınavda çıkabilecek noktalar.\n"
@@ -214,9 +301,12 @@ class QuizEngine:
             f"KAYNAK METİNLER:\n\n{context}\n\n=====\n\n"
             f"{topic_txt}"
             f"Zorluk: {req.difficulty} — {DIFFICULTIES.get(req.difficulty, '')}\n"
-            f"{self._type_instruction(req.qtype, n)}\n"
+            f"{self._type_instruction(req.qtype, n, plan)}\n"
+            f"{self._stem_hint(n)}\n"
             f"{LANG_RULE.get(req.language, '')}\n\n"
             f"Daha önce sorulan sorular (bunları tekrarlama):\n{avoid_txt}\n\n{JSON_SPEC}"
+            + (f"\n{FILL_SPEC}" if plan and "fill" in plan else "")
+            + (f"\n{MATCH_SPEC}" if plan and "match" in plan else "")
         )
         data = llm.complete_json(SYSTEM_QUIZ, user, max_tokens=8000, temperature=0.8)
         raw = nz.items(data, "questions", "items", "sorular", "quiz")
@@ -239,7 +329,9 @@ class QuizEngine:
             return None
         raw_opts = nz.first(q, "options", "choices", "secenekler", "şıklar", "siklar")
         has_pairs = bool(nz.first(q, "pairs", "matches", "matching"))
-        qtype = nz.norm_type(q.get("type"), default="match" if has_pairs else "mcq" if raw_opts else "open")
+        has_blanks = bool(nz.first(q, "blanks", "gaps")) or "____" in text
+        qtype = nz.norm_type(q.get("type"), default="match" if has_pairs else "mcq" if raw_opts
+                             else "fill" if has_blanks else "open")
         if qtype == "multi":
             qtype = "mcq"
         keys_raw = nz.first(q, "source_keys", "sources", "source", "kaynak", default=[])
@@ -255,6 +347,13 @@ class QuizEngine:
             "sources": [source_label(c) for c in src_chunks],
             "source_texts": [c["text"] for c in src_chunks],
         }
+        if qtype == "fill":
+            sent, bl = nz.blanks(q)
+            if not bl or len(bl) > 4:
+                return None
+            base.update(question=sent, blanks=bl,
+                        explanation=nz.text(nz.first(q, "explanation", "rationale", "aciklama", "açıklama")))
+            return base
         if qtype == "match":
             pr = nz.pairs(q)
             if len(pr) < 3:
@@ -297,6 +396,11 @@ class QuizEngine:
         key = q["answer_map"]
         right = sum(1 for i, c in enumerate(chosen) if i < len(key) and c == key[i])
         return right / max(1, len(key))
+
+    @staticmethod
+    def check_fill(q: dict, answers: list[str]) -> tuple[list[bool], float]:
+        oks = [nz.blank_ok(answers[i] if i < len(answers) else "", b) for i, b in enumerate(q["blanks"])]
+        return oks, sum(oks) / max(1, len(oks))
 
     # --------------------------------------------------------------- review
     def generate_review(self, profile: str = "", n_mcq: int = 5, n_match: int = 5, difficulty: str = "Orta",
@@ -352,7 +456,7 @@ class QuizEngine:
                 "kavramı farklı açılardan yoklayan YENİ sorular yaz):\n" + "\n".join(mistakes) + "\n\n"
                 f"Zayıf konular: {', '.join(topics[:10]) or '(belirtilmemiş)'}\n"
                 f"Zorluk: {difficulty} — {DIFFICULTIES.get(difficulty, '')}\n"
-                f"Toplam: {' ve '.join(parts)}.\n"
+                f"Toplam: {' ve '.join(parts)}.\n{self._stem_hint(5)}\n"
                 f"{LANG_RULE.get(language, '')}\n\n{JSON_SPEC}\n{MATCH_SPEC}"
             )
             data = llm.complete_json(SYSTEM_QUIZ, user, max_tokens=10000, temperature=0.7)
@@ -406,11 +510,11 @@ class QuizEngine:
 
     # ---------------------------------------------------------------- chat
     def chat_stream(self, question: str, history: list[dict], k: int = 6,
-                    doc_ids: list[int] | None = None):
+                    doc_ids: list[int] | None = None, search_query: str | None = None):
         """(metin akışı, kullanılan kaynaklar, istemci) döner; istemcinin `label`'ı cevabı veren modeldir."""
         # Takip sorularında aramayı önceki kullanıcı mesajıyla zenginleştir
         prev_user = [m["content"] for m in history if m["role"] == "user"][-1:]
-        query = " ".join(prev_user + [question])
+        query = search_query or " ".join(prev_user + [question])
         hits = self.retriever.search(query, k=k, doc_ids=doc_ids)
         context, _ = format_context(hits) if hits else ("(Kütüphanede ilgili kaynak bulunamadı.)", {})
         msgs = [m for m in history[-8:] if m["role"] in ("user", "assistant")]

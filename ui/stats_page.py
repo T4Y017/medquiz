@@ -64,8 +64,9 @@ class StatsPage(QWidget):
         f1, self.v_total = _tile("Cevaplanan soru")
         f2, self.v_avg = _tile("Genel başarı")
         f3, self.v_mcq = _tile("Çoktan seçmeli")
-        f4, self.v_open = _tile("Klasik")
-        for i, f in enumerate((f1, f2, f3, f4)):
+        f4, self.v_fill = _tile("Boşluk doldurma")
+        f5, self.v_match = _tile("Eşleştirme")
+        for i, f in enumerate((f1, f2, f3, f4, f5)):
             tiles.addWidget(f, 0, i)
         root.addLayout(tiles)
 
@@ -100,7 +101,8 @@ class StatsPage(QWidget):
         self.v_avg.setText(f"%{s['avg'] * 100:.0f}" if s["total"] else "—")
         by = {r[0]: r for r in s["by_type"]}
         self.v_mcq.setText(f"%{by['mcq'][2] * 100:.0f}  ({by['mcq'][1]})" if "mcq" in by else "—")
-        self.v_open.setText(f"%{by['open'][2] * 100:.0f}  ({by['open'][1]})" if "open" in by else "—")
+        for k, lbl in (("fill", self.v_fill), ("match", self.v_match)):
+            lbl.setText(f"%{by[k][2] * 100:.0f}  ({by[k][1]})" if k in by else "—")
 
         self.t_topic.setRowCount(len(s["by_topic"]))
         for r, (topic, n, avg) in enumerate(s["by_topic"]):
@@ -117,7 +119,7 @@ class StatsPage(QWidget):
             except json.JSONDecodeError:
                 q = ""
             self.t_recent.setItem(r, 0, QTableWidgetItem(q[:140]))
-            self.t_recent.setItem(r, 1, QTableWidgetItem({"mcq": "ÇS", "match": "Eşleştirme"}.get(row["qtype"], "Klasik")))
+            self.t_recent.setItem(r, 1, QTableWidgetItem({"mcq": "ÇS", "match": "Eşleştirme", "fill": "Boşluk"}.get(row["qtype"], "Klasik")))
             it = QTableWidgetItem(f"%{row['score'] * 100:.0f}")
             it.setForeground(self._color(row["score"]))
             self.t_recent.setItem(r, 2, it)

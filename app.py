@@ -19,7 +19,7 @@ from PySide6.QtCore import Qt, QTimer  # noqa: E402
 from PySide6.QtGui import QIcon  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication, QComboBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow,
-    QStackedWidget, QVBoxLayout, QWidget,
+    QStackedWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
 from core.config import PROVIDERS, data_dir  # noqa: E402
@@ -31,13 +31,17 @@ from ui.library_page import LibraryPage  # noqa: E402
 from ui.quiz_page import QuizPage  # noqa: E402
 from ui.settings_page import SettingsPage  # noqa: E402
 from ui.stats_page import StatsPage  # noqa: E402
+from ui.summary_page import SummaryPage  # noqa: E402
 from ui.vocab_page import VocabPage  # noqa: E402
 
 from core.version import __version__ as VERSION  # noqa: E402
 
 
 class MainWindow(QMainWindow):
-    SETTINGS_ROW = 6
+    PAGES = ("Quiz", "Vaka", "Özet", "Sohbet", "Kütüphane", "Kelimeler", "İstatistik", "Ayarlar")
+    SETTINGS_ROW = 7
+    LIBRARY_ROW = 4
+    EXPANDED_W, COLLAPSED_W = 220, 64
     def __init__(self, ctx: AppContext):
         super().__init__()
         self.ctx = ctx
@@ -52,15 +56,28 @@ class MainWindow(QMainWindow):
 
         side = QWidget()
         side.setObjectName("sidebar")
-        side.setFixedWidth(220)
+        self.side = side
+        side.setFixedWidth(self.EXPANDED_W)
         sl = QVBoxLayout(side)
         sl.setContentsMargins(0, 0, 0, 0)
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 8, 0)
         brand = QLabel("⚕ MedQuiz")
         brand.setObjectName("brand")
+        self.toggle_btn = QToolButton()
+        self.toggle_btn.setObjectName("sideToggle")
+        self.toggle_btn.setText("«")
+        self.toggle_btn.setToolTip("Menüyü daralt / genişlet")
+        self.toggle_btn.setCursor(Qt.PointingHandCursor)
+        self.toggle_btn.clicked.connect(lambda: self.set_collapsed(not self.collapsed))
+        top.addWidget(brand, 1)
+        top.addWidget(self.toggle_btn)
+        sl.addLayout(top)
         sub = QLabel("Kaynaklı tıbbi quiz asistanı")
         sub.setObjectName("brandSub")
-        sl.addWidget(brand)
         sl.addWidget(sub)
+        self.brand = brand
+        self._side_extras = [sub]
 
         self.nav = QListWidget()
         self.nav.setObjectName("nav")
@@ -74,6 +91,7 @@ class MainWindow(QMainWindow):
         self.ai_cb.setToolTip("Quiz, vaka ve sohbette hangi yapay zekânın kullanılacağı")
         self.ai_cb.activated.connect(self._ai_changed)
         sl.addWidget(self.ai_cb)
+        self._side_extras += [al, self.ai_cb]
 
         pl = QLabel("Kullanıcı")
         pl.setObjectName("sideLabel")
@@ -92,6 +110,7 @@ class MainWindow(QMainWindow):
         ver.setObjectName("sideLabel")
         sl.addWidget(ver)
         sl.addSpacing(10)
+        self._side_extras += [pl, self.profile_cb, ver]
         lay.addWidget(side)
 
         self.stack = QStackedWidget()
@@ -100,20 +119,29 @@ class MainWindow(QMainWindow):
 
         self.quiz = QuizPage(ctx)
         self.case = CasePage(ctx)
+        self.summary = SummaryPage(ctx)
         self.chat = ChatPage(ctx)
         self.library = LibraryPage(ctx)
         self.stats = StatsPage(ctx)
         self.vocab = VocabPage(ctx)
         self.settings = SettingsPage(ctx)
-        for icon, name, page in (("📝", "Quiz", self.quiz), ("🩺", "Vaka", self.case), ("💬", "Sohbet", self.chat),
+        self._nav_items = []
+        for icon, name, page in (("📝", "Quiz", self.quiz), ("🩺", "Vaka", self.case), ("📑", "Özet", self.summary),
+                                 ("💬", "Sohbet", self.chat),
                                  ("📚", "Kütüphane", self.library), ("📘", "Kelimeler", self.vocab),
                                  ("📊", "İstatistik", self.stats),
                                  ("⚙", "Ayarlar", self.settings)):
-            self.nav.addItem(QListWidgetItem(f"{icon}   {name}"))
+            it = QListWidgetItem(f"{icon}   {name}")
+            it.setToolTip(name)
+            self._nav_items.append((it, icon, name))
+            self.nav.addItem(it)
             self.stack.addWidget(page)
         self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
 
         self.chat.quiz_btn.clicked.connect(self._quiz_from_chat)
+        self.summary.quiz_requested.connect(self._quiz_from_doc)
+        self.collapsed = False
+        self.set_collapsed(bool(ctx.settings.extra.get("sidebar_collapsed")), save=False)
         ctx.settings_changed.connect(self._apply_style)
         self.statusBar().setStyleSheet("QStatusBar{background:#ecfdf5; color:#065f46; border-top:1px solid #a7f3d0;}")
         self.statusBar().hide()
@@ -132,9 +160,35 @@ class MainWindow(QMainWindow):
         if not ctx.settings.has_any_key:
             self.nav.setCurrentRow(self.SETTINGS_ROW)
         elif not ctx.db.list_documents():
-            self.nav.setCurrentRow(3)
+            self.nav.setCurrentRow(self.LIBRARY_ROW)
         else:
             self.nav.setCurrentRow(0)
+
+    def go(self, name: str) -> None:
+        self.nav.setCurrentRow(self.PAGES.index(name))
+
+    def set_collapsed(self, on: bool, save: bool = True) -> None:
+        self.collapsed = on
+        self.side.setFixedWidth(self.COLLAPSED_W if on else self.EXPANDED_W)
+        for w in self._side_extras:
+            w.setVisible(not on)
+        self.brand.setText("⚕" if on else "⚕ MedQuiz")
+        self.toggle_btn.setText("»" if on else "«")
+        self.nav.setProperty("compact", on)
+        for it, icon, name in self._nav_items:
+            it.setText(icon if on else f"{icon}   {name}")
+            it.setTextAlignment(Qt.AlignCenter if on else (Qt.AlignLeft | Qt.AlignVCenter))
+        self.nav.style().unpolish(self.nav)
+        self.nav.style().polish(self.nav)
+        if save:
+            self.ctx.settings.extra["sidebar_collapsed"] = on
+            self.ctx.settings.save()
+
+    def _quiz_from_doc(self, doc_id: int, topic: str):
+        self.quiz.select_doc(doc_id)
+        if topic:
+            self.quiz.topic_le.setText(topic)
+        self.go("Quiz")
 
     def _profile_changed(self):
         name = self.profile_cb.currentText().strip()
@@ -175,7 +229,7 @@ class MainWindow(QMainWindow):
         q = self.chat.last_user_question()
         if q:
             self.quiz.topic_le.setText(q[:120])
-        self.nav.setCurrentRow(0)
+        self.go("Quiz")
 
     def _apply_style(self):
         QApplication.instance().setStyleSheet(style.stylesheet(self.ctx.settings.font_size))

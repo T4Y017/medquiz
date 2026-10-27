@@ -19,9 +19,11 @@ sistemi çalışır.
 | 💬 **Vakaya soru sor** | Vaka sırasında eğitmene soru sor; vaka bitmeden cevabı söylemez, ipucu verir |
 | 🔬 **Paraklinik vaka aşamaları** | Hemogram, biyokimya, kan gazı, EKG, görüntüleme, patoloji sonuçları tablo hâlinde (referans aralığı, ↑/↓ işaretli); görev bu sonuçları yorumlatır |
 | 📝 **Vaka sonu testi** | Vaka bittikten sonra 0–10 soruluk TUS tarzı test (yarısı paraklinik yorum); aşama ve test puanı ayrı gösterilir |
-| 📝 **Quiz** | Çoktan seçmeli (5 şık), klasik veya karışık · Kolay / Orta / Zor / Klinik vaka · konu odaklı ya da tüm kütüphaneden |
+| 📝 **Quiz** | Türe göre ayrı sayı: Test (5 şık, çeşitli TUS kalıpları) · Boşluk doldurma (yazım hatasına hoşgörülü) · Eşleştirme · Kolay / Orta / Zor / Klinik vaka |
+| 📑 **Özet** | Kaynaktan (PDF sayfa aralığı ya da konu) ayrıntılı özet: sınıflama, klinik protokol, tablolar gerçek tablo olarak, soru setleri, pediatrik vakalar, İngilizce cloze/AWL · kendi şablonun · PDF/Markdown dışa aktarma |
+| 💬 **Sohbet** | Kaynak seçimi, hazır işlemler (Özetle, Karşılaştır, Ayırıcı tanı, Tedavi ve dozlar, Basitçe anlat, Beni sına), tablolu cevaplar |
 | ♾️ **Sürekli mod** | Sorular bittikçe arka planda yenileri üretilir, daha önce sorulanlar tekrarlanmaz |
-| ✍️ **Klasik cevap puanlama** | 0–100 puan, doğru değinilen / eksik / hatalı noktalar, örnek cevap |
+| ✍️ **Klasik cevap puanlama** (vakalarda) | 0–100 puan, doğru değinilen / eksik / hatalı noktalar, örnek cevap |
 | 🔁 **Yanlışları tekrar et** | Yanlış yaptığın soruların konularından **yeni** sorular: 5 çoktan seçmeli + 5 eşleştirme (aynı sorular tekrar sorulmaz) |
 | 🔗 **Eşleştirme** | Sol sütundaki öğeleri sağdakilerle eşleştir (ör. ilaç ↔ yan etki); kısmi puan |
 | ✅ **Esnek klasik puanlama** | Kısa ama özü doğru cevap tam puan alabilir; birebir örnek cevap aranmaz, eş anlamlı ve kısaltmalar kabul edilir |

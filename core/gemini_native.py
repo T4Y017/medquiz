@@ -89,13 +89,26 @@ class GeminiNative:
     # ------------------------------------------------------------------ istek gövdesi
     def _body(self, system: str, messages: list[dict], max_tokens: int, temperature: float,
               json_mode: bool, thinking: str | None) -> dict:
+        import base64
+
         contents = []
         for m in messages:
             role = "model" if m["role"] == "assistant" else "user"
-            if contents and contents[-1]["role"] == role:          # ardışık aynı rol → birleştir
-                contents[-1]["parts"][0]["text"] += "\n\n" + m["content"]
+            c = m["content"]
+            if isinstance(c, list):          # çok biçimli: [{"type":"text"|"pdf", ...}]
+                parts = []
+                for p in c:
+                    if p.get("type") == "pdf":
+                        parts.append({"inline_data": {"mime_type": "application/pdf",
+                                                      "data": base64.b64encode(p["data"]).decode()}})
+                    else:
+                        parts.append({"text": p.get("text", "")})
             else:
-                contents.append({"role": role, "parts": [{"text": m["content"]}]})
+                parts = [{"text": c}]
+            if contents and contents[-1]["role"] == role:          # ardışık aynı rol → birleştir
+                contents[-1]["parts"].extend(parts)
+            else:
+                contents.append({"role": role, "parts": parts})
         gen: dict = {"maxOutputTokens": int(max_tokens), "temperature": float(temperature)}
         if json_mode:
             gen["responseMimeType"] = "application/json"

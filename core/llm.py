@@ -127,10 +127,9 @@ class LLMClient:
 
     # ------------------------------------------------------------ complete
     @staticmethod
-    def _timeout():
-        import httpx
-        # bağlantı 15 sn; yanıt (veya akışta iki parça arası) en fazla 100 sn — sonra yedek modele geçilir
-        return httpx.Timeout(100.0, connect=15.0)
+    def _timeout() -> float:
+        # Düz sayı: SDK'ların farklı httpx sürümleriyle (httpx / httpx2) uyumlu. Yanıt en fazla 120 sn.
+        return 120.0
 
     def _openai_kwargs(self, max_tokens: int, temperature: float) -> dict:
         kw: dict = {"model": self.model, "temperature": temperature, "max_tokens": max_tokens}
@@ -152,6 +151,30 @@ class LLMClient:
                 kw = {k: v for k, v in kw.items() if k != "reasoning_effort"}
                 return self._client.chat.completions.create(**kw)
             raise
+
+    def _conv(self, messages: list[dict]) -> list[dict]:
+        """Çok biçimli içerikleri (PDF) sağlayıcının biçimine çevirir; düz metin mesajlara dokunmaz."""
+        import base64
+        out = []
+        for m in messages:
+            c = m["content"]
+            if not isinstance(c, list):
+                out.append(m)
+                continue
+            parts = []
+            for p in c:
+                if p.get("type") == "pdf":
+                    b64 = base64.b64encode(p["data"]).decode()
+                    if self.provider == "anthropic":
+                        parts.append({"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
+                                                                       "data": b64}})
+                    else:
+                        parts.append({"type": "file", "file": {"filename": p.get("name", "kaynak.pdf"),
+                                                               "file_data": f"data:application/pdf;base64,{b64}"}})
+                else:
+                    parts.append({"type": "text", "text": p.get("text", "")})
+            out.append({"role": m["role"], "content": parts})
+        return out
 
     def _native_call(self, fn):
         from .gemini_native import GeminiAPIError
@@ -177,6 +200,7 @@ class LLMClient:
             log.info("Gemini %s: %.1f sn, bitiş=%s, kullanım=%s", self.model, res.secs, res.finish, res.usage)
             return text
         try:
+            messages = self._conv(messages)
             if self.provider == "anthropic":
                 r = self._client.messages.create(
                     model=self.model, system=system, messages=messages,
@@ -220,6 +244,7 @@ class LLMClient:
                             e.status, e.quota_id, e.retry_after, e.kind, e.message[:300])
                 raise _from_gemini(e, self.model) from e
             return
+        messages = self._conv(messages)
         try:
             if self.provider == "anthropic":
                 with self._client.messages.stream(
@@ -332,10 +357,13 @@ class RoutedLLM:
         return f"{PROVIDERS[p]['short']} · {m}"
 
     def _make(self, p: str, m: str):
+        import inspect
         try:
-            return self.client_cls(self.settings, p, m)
-        except TypeError:          # eski imzalı test istemcileri
-            return self.client_cls(self.settings, p)
+            n = len(inspect.signature(self.client_cls).parameters)
+        except (TypeError, ValueError):
+            n = 3
+        # eski imzalı (settings, provider) test istemcileri de desteklenir; gerçek TypeError'lar gizlenmez
+        return self.client_cls(self.settings, p, m) if n >= 3 else self.client_cls(self.settings, p)
 
     # Bekleme politikası: sağlayıcı "N sn sonra dene" derse (ör. Gemini dakikalık sınır) ve N makulse beklenir,
     # birincil model hemen yedeğe bırakılmaz. Toplam bekleme bir istek için WAIT_BUDGET'ı aşmaz.

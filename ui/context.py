@@ -32,6 +32,8 @@ class AppContext(QObject):
         factory = lambda task="heavy": RoutedLLM(self.settings, task=task)  # noqa: E731
         self.engine = QuizEngine(self.db, self.retriever, factory)
         self.case_engine = CaseEngine(self.db, self.retriever, self.engine, factory)
+        from core.summary import SummaryEngine
+        self.summary_engine = SummaryEngine(self.db, self.retriever, factory)
         self.translator = Translator(self.db, lambda: RoutedLLM(self.settings, task="light"))
         from core import usage
         usage.attach(self.db)

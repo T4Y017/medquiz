@@ -60,6 +60,17 @@ CREATE TABLE IF NOT EXISTS vocab (
     lapses INTEGER DEFAULT 0
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_vocab_term ON vocab(lower(term), profile);
+CREATE TABLE IF NOT EXISTS summaries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at REAL NOT NULL,
+    doc_id INTEGER,
+    title TEXT NOT NULL,
+    scope TEXT DEFAULT '',
+    template TEXT DEFAULT '',
+    markdown TEXT NOT NULL,
+    model TEXT DEFAULT '',
+    profile TEXT DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS usage (
     day TEXT NOT NULL,
     model TEXT NOT NULL,
@@ -139,6 +150,16 @@ class Database:
                 "FROM documents d ORDER BY d.added_at DESC"
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def get_document(self, doc_id: int) -> dict | None:
+        with self._lock:
+            r = self.conn.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
+        return dict(r) if r else None
+
+    def doc_chunks(self, doc_id: int) -> list[dict]:
+        with self._lock:
+            return [dict(r) for r in self.conn.execute(
+                "SELECT id, idx, text, location FROM chunks WHERE doc_id = ? ORDER BY idx", (doc_id,)).fetchall()]
 
     def delete_document(self, doc_id: int) -> None:
         with self._lock:
@@ -311,6 +332,35 @@ class Database:
                 "SELECT DISTINCT profile FROM questions WHERE profile != '' ORDER BY profile"
             ).fetchall()
             return [r[0] for r in rows]
+
+    # ------------------------------------------------------------ summaries
+    def save_summary(self, doc_id: int | None, title: str, scope: str, template: str, markdown: str,
+                     model: str = "", profile: str = "") -> int:
+        with self._lock:
+            cur = self.conn.execute(
+                "INSERT INTO summaries(created_at, doc_id, title, scope, template, markdown, model, profile) "
+                "VALUES (?,?,?,?,?,?,?,?)", (time.time(), doc_id, title, scope, template, markdown, model, profile))
+            self.conn.commit()
+            return cur.lastrowid
+
+    def list_summaries(self, profile: str | None = None) -> list[dict]:
+        sql = "SELECT id, created_at, doc_id, title, scope, template, model FROM summaries"
+        params: tuple = ()
+        if profile is not None:
+            sql += " WHERE profile = ?"
+            params = (profile,)
+        with self._lock:
+            return [dict(r) for r in self.conn.execute(sql + " ORDER BY created_at DESC", params).fetchall()]
+
+    def get_summary(self, sid: int) -> dict | None:
+        with self._lock:
+            r = self.conn.execute("SELECT * FROM summaries WHERE id = ?", (sid,)).fetchone()
+        return dict(r) if r else None
+
+    def delete_summary(self, sid: int) -> None:
+        with self._lock:
+            self.conn.execute("DELETE FROM summaries WHERE id = ?", (sid,))
+            self.conn.commit()
 
     # ---------------------------------------------------------------- usage
     def inc_usage(self, day: str, model: str) -> None:

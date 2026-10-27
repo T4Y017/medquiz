@@ -122,7 +122,8 @@ def load_pdf(path: Path, progress: Progress = None) -> LoadedDoc:
         if letters < 0.6:
             warnings.append("Metin çıkarımı bozuk görünüyor (çok sayıda anlamsız karakter). Kitap düzgün okunmamış "
                             "olabilir; mümkünse farklı bir PDF sürümü deneyin.")
-    if str(title).strip().lower() in ("", "untitled", "microsoft word", "document") or len(str(title)) < 3:
+    if str(title).strip().lower().strip("()") in ("", "untitled", "anonymous", "microsoft word", "document",
+                                                  "başlıksız", "adsız") or len(str(title)) < 3:
         title = path.stem
     return LoadedDoc(title=str(title).strip(), source=str(path), kind="pdf", sections=sections, warnings=warnings)
 
