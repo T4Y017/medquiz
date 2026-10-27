@@ -13,8 +13,11 @@ log = logging.getLogger(__name__)
 
 
 class LLMError(Exception):
-    def __init__(self, msg: str, fallback_ok: bool = False, transient: bool = False, provider_wide: bool = False):
+    def __init__(self, msg: str, fallback_ok: bool = False, transient: bool = False, provider_wide: bool = False,
+                 cooldown: float = 0.0, retry_same: bool = True):
         super().__init__(msg)
+        self.cooldown = cooldown        # bu model kaç saniye dinlenmeye alınsın
+        self.retry_same = retry_same    # aynı modeli hemen bir kez daha denemek mantıklı mı
         self.provider_wide = provider_wide  # anahtar/kota/izin: aynı sağlayıcının diğer modelleri de başarısız olur
         self.fallback_ok = fallback_ok  # başka bir model/sağlayıcıyla denemek mantıklı mı?
         self.transient = transient      # geçici (yoğunluk, hız sınırı, zaman aşımı): kısa bekleyip tekrar denenebilir
@@ -32,18 +35,21 @@ def _classify(e: Exception, provider: str) -> LLMError:
         if provider == "gemini":
             return LLMError("Gemini kullanım sınırına ulaşıldı (ücretsiz katmanda dakikalık ve günlük istek sınırı "
                             "vardır). Bir dakika bekleyip tekrar deneyin; sürekli oluyorsa günlük sınır dolmuştur.", True,
-                            transient=True)
+                            transient=True, cooldown=180, retry_same=False)
         return LLMError(f"{name} hesabında bakiye/kota yok ya da günlük kota doldu.", True, provider_wide=True)
     if status == 429 or ("rate" in low and "limit" in low):
-        return LLMError(f"{name}: çok sık istek gönderildi (hız sınırı). Biraz bekleyip tekrar deneyin.", True, True)
+        return LLMError(f"{name}: çok sık istek gönderildi (hız sınırı). Biraz bekleyip tekrar deneyin.", True, True,
+                        cooldown=90)
     if status == 404 or "not_found" in low or ("model" in low and "not" in low and "found" in low):
         return LLMError(f"{name}: seçilen model bulunamadı. Ayarlar'dan başka bir model seçin.", True)
     if "connection" in low or "timed out" in low or "timeout" in low:
         if "timed out" in low or "timeout" in low:
-            return LLMError(f"{name} zamanında yanıt vermedi (sunucu yoğun olabilir).", True, True)
+            return LLMError(f"{name} zamanında yanıt vermedi (sunucu yoğun olabilir).", True, True,
+                            cooldown=120, retry_same=False)
         return LLMError(f"{name} sunucusuna bağlanılamadı. İnternet bağlantınızı kontrol edin.", True, True)
     if status and status >= 500 or "overloaded" in low or "unavailable" in low:
-        return LLMError(f"{name} sunucusu şu an yanıt veremiyor (yoğunluk). Biraz sonra tekrar deneyin.", True, True)
+        return LLMError(f"{name} sunucusu şu an yanıt veremiyor (yoğunluk). Biraz sonra tekrar deneyin.", True, True,
+                        cooldown=60)
     if status == 403 or "permission" in low or "location is not supported" in low:
         return LLMError(f"{name}: bu anahtarın erişim izni yok ya da bölge desteklenmiyor.", True, provider_wide=True)
     return LLMError(f"{name} hatası: {msg[:300]}", False)
@@ -191,6 +197,20 @@ class RoutedLLM:
     """
 
     RETRY_WAIT = 4.0
+    # Sınıra takılan / yanıt vermeyen modeller kısa süre atlanır (tüm istemciler arasında ortak)
+    _cooldown_until: dict[tuple[str, str], float] = {}
+
+    @classmethod
+    def _cool(cls, p: str, m: str, secs: float) -> None:
+        if secs > 0:
+            cls._cooldown_until[(p, m)] = time.time() + secs
+
+    def _ordered(self) -> list[tuple[str, str]]:
+        """Dinlenmedeki modelleri sona atar (hiçbiri müsait değilse yine de dener)."""
+        now = time.time()
+        ready = [c for c in self.candidates if self._cooldown_until.get(c, 0) <= now]
+        cooling = [c for c in self.candidates if c not in ready]
+        return ready + cooling
 
     def __init__(self, settings: Settings, client_cls=LLMClient):
         self.settings = settings
@@ -230,9 +250,10 @@ class RoutedLLM:
 
     def _run(self, fn):
         errors: list[str] = []
-        n = len(self.candidates)
         dead: set[str] = set()
-        for i, (p, m) in enumerate(self.candidates):
+        order = self._ordered()
+        n = len(order)
+        for i, (p, m) in enumerate(order):
             if p in dead:
                 continue
             for attempt in (1, 2):
@@ -240,11 +261,13 @@ class RoutedLLM:
                     client = self._make(p, m)
                     res = fn(client)
                     self.used = client.label
-                    self.fell_back = i > 0
+                    self.fell_back = (p, m) != self.candidates[0]
+                    self._cooldown_until.pop((p, m), None)
                     return res
                 except LLMError as e:
                     log.warning("%s/%s başarısız (deneme %d): %s", p, m, attempt, e)
-                    if e.transient and attempt == 1:
+                    self._cool(p, m, getattr(e, "cooldown", 0))
+                    if e.transient and attempt == 1 and getattr(e, "retry_same", True):
                         time.sleep(self.RETRY_WAIT)
                         continue
                     errors.append(f"{PROVIDERS[p]['short']} · {m}: {e}")
@@ -254,7 +277,7 @@ class RoutedLLM:
                         dead.add(p)
                     break
             if i < n - 1:
-                np_, nm = self.candidates[i + 1]
+                np_, nm = order[i + 1]
                 self.notes.append(f"{p}/{m} yanıt vermedi → {PROVIDERS[np_]['short']} · {nm} deneniyor.")
         if len(errors) > 1:
             raise LLMError("Hiçbir yapay zekâ yanıt veremedi:\n• " + "\n• ".join(errors))
@@ -274,7 +297,7 @@ class RoutedLLM:
         errors: list[str] = []
         n = len(self.candidates)
         dead: set[str] = set()
-        for i, (p, m) in enumerate(self.candidates):
+        for i, (p, m) in enumerate(self._ordered()):
             if p in dead:
                 continue
             for attempt in (1, 2):
@@ -282,16 +305,17 @@ class RoutedLLM:
                 try:
                     client = self._make(p, m)
                     self.used = client.label
-                    self.fell_back = i > 0
+                    self.fell_back = (p, m) != self.candidates[0]
                     for piece in client.stream(system, messages, max_tokens=max_tokens, temperature=temperature):
                         started = True
                         yield piece
                     return
                 except LLMError as e:
                     log.warning("%s/%s (akış) başarısız (deneme %d): %s", p, m, attempt, e)
+                    self._cool(p, m, getattr(e, "cooldown", 0))
                     if started:
                         raise
-                    if e.transient and attempt == 1:
+                    if e.transient and attempt == 1 and getattr(e, "retry_same", True):
                         time.sleep(self.RETRY_WAIT)
                         continue
                     errors.append(f"{PROVIDERS[p]['short']} · {m}: {e}")
