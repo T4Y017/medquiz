@@ -184,7 +184,7 @@ def run(pdf: str | None, out: str) -> int:
         cid, _sec = gdrive.client_config()
         import cryptography  # noqa: F401  (paketlenmiş sürümde şifreleme kütüphanesi var mı)
         if not cid:
-            return {"google_sign_in": False}
+            raise RuntimeError("Google istemci kimliği bu derlemede yok (GOOGLE_CLIENT_ID sırrı eksik)")
         # İstemci kimliği/gizli anahtar Google'da geçerli mi? Sahte bir kodla belirteç isteği: geçerli istemcide
         # Google 'invalid_grant' der, yanlış istemcide 'invalid_client'.
         import requests
@@ -196,7 +196,7 @@ def run(pdf: str | None, out: str) -> int:
             raise RuntimeError(f"Google istemci kimliği/gizli anahtarı geçersiz: {err}")
         return {"google_sign_in": True, "client": cid[:12] + "…", "google_check": err or r.status_code}
 
-    _step(results, "Google ile giriş hazırlığı", google_ready)
+    _step(results, "Google ile giriş hazırlığı", google_ready, required=False)
 
     def update_check():
         from . import updater

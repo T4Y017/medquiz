@@ -48,8 +48,8 @@ jobs:
         run: |
           if ($env:GID) {
             "CLIENT_ID = `"$($env:GID)`"`nCLIENT_SECRET = `"$($env:GSECRET)`"" | Set-Content core/google_client.py -Encoding utf8
-            Write-Host "Google sign-in enabled"
-          } else { Write-Host "Google sign-in: no client id secret yet" }
+            Write-Host "::notice::Google ile giriş etkin (istemci: $($env:GID.Substring(0,12))…)"
+          } else { Write-Host "::warning::Google ile giriş kapalı: GOOGLE_CLIENT_ID sırrı yok" }
 
       - name: Build app
         run: pyinstaller --noconfirm --clean medquiz.spec
