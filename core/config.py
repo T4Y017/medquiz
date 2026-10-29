@@ -115,7 +115,11 @@ class Settings:
         known = {k: v for k, v in raw.items() if k in cls.__dataclass_fields__}
         return cls(**known)
 
-    def save(self) -> None:
+    def save(self, touch: bool = True) -> None:
+        """touch=False: eşitlemeden gelen ayar uygulanırken değişiklik zamanı değiştirilmez."""
+        if touch:
+            import time
+            self.extra["_saved_at"] = time.time()
         p = self.path()
         tmp = p.with_suffix(".tmp")
         tmp.write_text(json.dumps(asdict(self), ensure_ascii=False, indent=2), encoding="utf-8")

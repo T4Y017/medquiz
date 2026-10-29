@@ -115,6 +115,17 @@ class SettingsPage(QWidget):
         t.setObjectName("h1")
         root.addWidget(t)
 
+        # --- hesap (başka bilgisayarlarda kullanma)
+        self.acc_card = QFrame()
+        self.acc_card.setObjectName("card")
+        self.acc_lay = QVBoxLayout(self.acc_card)
+        self.acc_lay.setContentsMargins(20, 16, 20, 16)
+        self.acc_lay.setSpacing(8)
+        ha = QLabel("Hesap — başka bilgisayarlarda kullan")
+        ha.setObjectName("h2")
+        self.acc_lay.addWidget(ha)
+        root.addWidget(self.acc_card)
+
         # --- yapay zeka
         card = QFrame()
         card.setObjectName("card")
@@ -164,7 +175,8 @@ class SettingsPage(QWidget):
         f.addRow("Bugünkü kullanım", self.usage_lbl)
         cl.addLayout(f)
         note = QLabel("ℹ️ Claude Pro veya Google AI Pro/Gemini Advanced gibi sohbet abonelikleri burada kullanılamaz; "
-                      "API anahtarları ayrı faturalandırılır. Anahtarlar yalnızca bu bilgisayarda saklanır.")
+                      "API anahtarları ayrı faturalandırılır. Anahtarlar bu bilgisayarda saklanır; hesap bağlıysa şifreli "
+                      "olarak senin bulut klasörüne de kopyalanır.")
         note.setObjectName("muted")
         note.setWordWrap(True)
         cl.addWidget(note)
@@ -247,6 +259,7 @@ class SettingsPage(QWidget):
         root.addWidget(disc)
         root.addStretch()
         ctx.settings_changed.connect(self._sync_primary)
+        ctx.data_synced.connect(self.reload)
 
     def showEvent(self, e):
         self.refresh_usage()
@@ -264,6 +277,23 @@ class SettingsPage(QWidget):
             warn = " — ⚠ günlük kota doldu" if d["exhausted"] else ""
             parts.append(f"{m}: {d['used']}{lim}{warn}")
         self.usage_lbl.setText(" · ".join(parts) + "   (kota her gün TR saatiyle ~10:00'da sıfırlanır)")
+
+    def attach_sync(self, ctl):
+        from .sync_ui import AccountCard
+        self.acc_lay.addWidget(AccountCard(ctl))
+
+    def reload(self):
+        """Eşitlemeyle gelen ayarları alanlara yansıt."""
+        s = self.ctx.settings
+        for r in self.rows:
+            r.key.setText(s.key_for(r.provider))
+            r.model.setCurrentText(s.model_for(r.provider))
+        self._sync_primary()
+        self.fallback.setChecked(s.fallback_enabled)
+        self.save_quota.setChecked(s.gemini_save_quota)
+        self.diff.setCurrentText(s.default_difficulty)
+        self.count.setValue(s.default_count)
+        self.auto_upd.setChecked(s.auto_update)
 
     def attach_updater(self, upd):
         self.upd_btn.setEnabled(True)

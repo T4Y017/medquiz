@@ -153,6 +153,13 @@ class MainWindow(QMainWindow):
         from ui.update_ui import UpdateController
         self.updater = UpdateController(ctx, self)
         self.settings.attach_updater(self.updater)
+        from ui.sync_ui import SyncController
+        self.sync = SyncController(ctx, self)
+        self.settings.attach_sync(self.sync)
+        self.sync.status.connect(self._sync_status)
+        ctx.data_synced.connect(self._refresh_profiles)
+        QTimer.singleShot(2500, lambda: self.sync.sync(silent=True))
+        ctx.profile_changed.connect(self._profile_shown)
         ctx.settings_changed.connect(self._fill_ai)
         self._fill_ai()
 
@@ -189,6 +196,24 @@ class MainWindow(QMainWindow):
         if topic:
             self.quiz.topic_le.setText(topic)
         self.go("Quiz")
+
+    def _sync_status(self, msg: str):
+        if msg.startswith("⚠"):
+            self.statusBar().show()
+            self.statusBar().showMessage("🔄 Hesap eşitleme: " + msg)
+            self._sb_timer.start(15000)
+
+    def _refresh_profiles(self):
+        names = list(dict.fromkeys(self.ctx.settings.extra.get("profiles", []) + self.ctx.db.profiles()))
+        for n in names:
+            if self.profile_cb.findText(n) < 0:
+                self.profile_cb.addItem(n)
+
+    def _profile_shown(self, name: str):
+        if name and self.profile_cb.findText(name) < 0:
+            self.profile_cb.addItem(name)
+        if self.profile_cb.currentText() != name:
+            self.profile_cb.setCurrentText(name)
 
     def _profile_changed(self):
         name = self.profile_cb.currentText().strip()
@@ -235,6 +260,7 @@ class MainWindow(QMainWindow):
         QApplication.instance().setStyleSheet(style.stylesheet(self.ctx.settings.font_size))
 
     def closeEvent(self, e):
+        self.sync.push_on_exit()
         self.ctx.runner.wait_all(1500)
         super().closeEvent(e)
 

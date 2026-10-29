@@ -153,6 +153,32 @@ def run(pdf: str | None, out: str) -> int:
 
     _step(results, "Boşluk doldurma kontrolü", fill_logic)
 
+    def account_sync():
+        """İki 'bilgisayar' arasında şifreli hesap eşitlemesi (ağ gerekmez)."""
+        import tempfile
+        from .db import Database
+        from .sync import Account, SyncEngine
+        with tempfile.TemporaryDirectory() as tmp:
+            a, b = Database(Path(tmp) / "a.db"), Database(Path(tmp) / "b.db")
+            sa, sb = Settings(), Settings()
+            sa.gemini_api_key, sa.provider, sa.user_name = "test-key", "gemini", "Test"
+            a.add_vocab("mucosa", "mukoza", profile="Test")
+            qid = a.save_question("mcq", "T", "Orta", {"type": "mcq", "question": "q"}, [], "Test")
+            a.record_answer(qid, "x", 1.0)
+            cloud = Path(tmp) / "cloud"
+            cloud.mkdir()
+            SyncEngine(a, sa).sync(Account.create(str(cloud), "pw1234"), initial=False)
+            st = SyncEngine(b, sb).sync(Account.open(str(cloud), "pw1234"), initial=True)
+            ok = (sb.gemini_api_key == "test-key" and len(b.list_vocab("Test")) == 1
+                  and b.stats("Test")["total"] == 1)
+            a.conn.close()
+            b.conn.close()
+            if not ok:
+                raise RuntimeError(f"Eşitleme eksik: {st}")
+            return {"received": {k: v for k, v in st.items() if k in ("added", "settings", "devices")}}
+
+    _step(results, "Hesap eşitleme (şifreli, iki bilgisayar)", account_sync)
+
     def update_check():
         from . import updater
         real = updater.__version__

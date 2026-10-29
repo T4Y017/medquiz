@@ -20,7 +20,7 @@ sistemi çalışır.
 | 🔬 **Paraklinik vaka aşamaları** | Hemogram, biyokimya, kan gazı, EKG, görüntüleme, patoloji sonuçları tablo hâlinde (referans aralığı, ↑/↓ işaretli); görev bu sonuçları yorumlatır |
 | 📝 **Vaka sonu testi** | Vaka bittikten sonra 0–10 soruluk TUS tarzı test (yarısı paraklinik yorum); aşama ve test puanı ayrı gösterilir |
 | 📝 **Quiz** | Türe göre ayrı sayı: Test (5 şık, çeşitli TUS kalıpları) · Boşluk doldurma (yazım hatasına hoşgörülü) · Eşleştirme · Kolay / Orta / Zor / Klinik vaka |
-| 📑 **Özet** | Kaynaktan (PDF sayfa aralığı ya da konu) ayrıntılı özet: sınıflama, klinik protokol, tablolar gerçek tablo olarak, soru setleri, pediatrik vakalar, İngilizce cloze/AWL · kendi şablonun · PDF/Markdown dışa aktarma |
+| 📑 **Özet** | Kaynaktan (PDF sayfa aralığı ya da konu) ayrıntılı özet: sınıflama, klinik protokol, kaynaktaki tablolar gerçek tablo olarak (eksik kalırsa ayrıca çıkarılıp eklenir) + özet tabloları, soru setleri, pediatrik vakalar, İngilizce cloze/AWL · kendi şablonun · PDF/Markdown dışa aktarma |
 | 💬 **Sohbet** | Kaynak seçimi, hazır işlemler (Özetle, Karşılaştır, Ayırıcı tanı, Tedavi ve dozlar, Basitçe anlat, Beni sına), tablolu cevaplar |
 | ♾️ **Sürekli mod** | Sorular bittikçe arka planda yenileri üretilir, daha önce sorulanlar tekrarlanmaz |
 | ✍️ **Klasik cevap puanlama** (vakalarda) | 0–100 puan, doğru değinilen / eksik / hatalı noktalar, örnek cevap |
@@ -41,6 +41,20 @@ sistemi çalışır.
 Kısayollar: **A–E** veya **1–5** şık seçer, **Enter** sonraki soruya geçer.
 
 ---
+
+## Hesap: aynı kullanıcıyı başka bilgisayarda kullanmak
+
+Ayarlar → **Hesap — başka bilgisayarlarda kullan** → **Hesabı bağla**. MedQuiz, verilerini bilgisayarındaki bulut
+klasörüne (OneDrive, Google Drive ya da Dropbox; otomatik bulunur) **hesap şifrenle şifreleyerek** koyar:
+API anahtarları ve ayarlar, istatistikler/cevaplar, kelime havuzu, özetler, sohbetler, vakalar ve kütüphane
+(PDF'ler dahil). Diğer bilgisayarda aynı yere ve aynı şifreyle bağlan; her şey gelir, anahtar girmen gerekmez.
+
+- Sunucu yok; veriler yalnızca senin bulut hesabında ve bilgisayarlarında durur.
+- Her bilgisayar kendi dosyasını yazar, diğerlerini okuyup birleştirir. Hiçbir bilgisayarın verisi silinmez,
+  yalnızca senin sildiğin öğeler her yerde silinir. Eşitleme açılışta, 5 dakikada bir ve kapanışta yapılır.
+- Bulut klasörü yoksa: **Yedek dosyası al** → tek, şifreli `.mqbackup` dosyası (USB/e-posta) → diğer bilgisayarda
+  **Yedekten yükle**.
+- Şifre unutulursa buluttaki dosyalar açılamaz (bilgisayarındaki veriler durur).
 
 ## 0) Kurulum ve güncellemeler (aile için)
 

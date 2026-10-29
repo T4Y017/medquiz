@@ -8,3 +8,4 @@ beautifulsoup4>=4.12
 numpy>=1.26
 fastembed>=0.4
 pypdfium2>=4.30
+cryptography>=41

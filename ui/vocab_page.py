@@ -80,6 +80,7 @@ class VocabPage(QWidget):
         self.stack.addWidget(self._build_study())
         ctx.vocab_changed.connect(self.refresh)
         ctx.profile_changed.connect(lambda _: self.refresh())
+        ctx.data_synced.connect(self.refresh)
         self.refresh()
 
     # ================================================================ liste

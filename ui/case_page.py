@@ -276,6 +276,7 @@ class CasePage(QWidget):
         self.stack.addWidget(self._build_setup())
         self.stack.addWidget(self._build_runner())
         ctx.profile_changed.connect(lambda _: self.refresh_history())
+        ctx.data_synced.connect(self.refresh_history)
         self.refresh_history()
 
     # ================================================================ setup

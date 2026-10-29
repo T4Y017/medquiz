@@ -208,6 +208,8 @@ class SummaryPage(QWidget):
 
         ctx.library_changed.connect(self.refresh_docs)
         ctx.profile_changed.connect(lambda _: self.refresh_list())
+        ctx.data_synced.connect(lambda: self.refresh_list() if not self.task else None)
+        ctx.data_synced.connect(lambda: self.refresh_templates(self.tpl_cb.currentData()))
         self.refresh_docs()
         self.refresh_templates()
         self.refresh_list()

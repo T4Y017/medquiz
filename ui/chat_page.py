@@ -193,6 +193,7 @@ class ChatPage(QWidget):
 
         ctx.settings_changed.connect(self._fill_ai)
         ctx.library_changed.connect(self._fill_scope)
+        ctx.data_synced.connect(lambda: None if self.busy else self.refresh_list())
         self._fill_scope()
         ctx.profile_changed.connect(lambda _: (self.new_chat(), self.refresh_list()))
         self._fill_ai()

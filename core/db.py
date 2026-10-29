@@ -127,6 +127,34 @@ class Database:
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(questions)").fetchall()}
         if "reviewed_at" not in cols:
             self.conn.execute("ALTER TABLE questions ADD COLUMN reviewed_at REAL")
+        self._migrate_sync()
+
+    # Bilgisayarlar arası eşitleme için: her satıra küresel kimlik (uid), değişiklik zamanı (mtime) ve
+    # silinenler için iz (tombstone). Tetikleyiciler sayesinde mevcut kodun değişmesi gerekmez.
+    SYNC_TABLES = ("documents", "questions", "vocab", "summaries", "chats", "cases")
+
+    def _migrate_sync(self) -> None:
+        c = self.conn
+        c.execute("CREATE TABLE IF NOT EXISTS tombstones (uid TEXT PRIMARY KEY, tbl TEXT NOT NULL, at REAL NOT NULL)")
+        now = "((julianday('now') - 2440587.5) * 86400.0)"
+        for t in self.SYNC_TABLES:
+            cols = {r[1] for r in c.execute(f"PRAGMA table_info({t})").fetchall()}
+            if "uid" not in cols:
+                c.execute(f"ALTER TABLE {t} ADD COLUMN uid TEXT")
+            if "mtime" not in cols:
+                c.execute(f"ALTER TABLE {t} ADD COLUMN mtime REAL")
+            c.execute(f"UPDATE {t} SET uid = lower(hex(randomblob(16))) WHERE uid IS NULL")
+            c.execute(f"UPDATE {t} SET mtime = {now} WHERE mtime IS NULL")
+            c.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS ux_{t}_uid ON {t}(uid)")
+            c.executescript(f"""
+CREATE TRIGGER IF NOT EXISTS tr_{t}_ins AFTER INSERT ON {t} WHEN NEW.uid IS NULL OR NEW.mtime IS NULL
+BEGIN UPDATE {t} SET uid = COALESCE(NEW.uid, lower(hex(randomblob(16)))), mtime = COALESCE(NEW.mtime, {now})
+      WHERE id = NEW.id; END;
+CREATE TRIGGER IF NOT EXISTS tr_{t}_upd AFTER UPDATE ON {t} WHEN NEW.mtime IS OLD.mtime
+BEGIN UPDATE {t} SET mtime = {now} WHERE id = NEW.id; END;
+CREATE TRIGGER IF NOT EXISTS tr_{t}_del AFTER DELETE ON {t} WHEN OLD.uid IS NOT NULL
+BEGIN INSERT OR REPLACE INTO tombstones(uid, tbl, at) VALUES (OLD.uid, '{t}', {now}); END;
+""")
 
     # ------------------------------------------------------------ documents
     def add_document(self, title: str, source: str, kind: str, chunks: list[dict], topic: str = "") -> int:

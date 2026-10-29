@@ -20,6 +20,7 @@ class AppContext(QObject):
     profile_changed = Signal(str)
     index_status = Signal(str)
     vocab_changed = Signal()
+    data_synced = Signal()        # başka bilgisayardan veri geldi: listeler yenilensin
     ai_status = Signal(str)          # "model meşgul, 20 sn sonra tekrar" gibi anlık durumlar
 
     def __init__(self):
