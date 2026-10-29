@@ -40,6 +40,17 @@ jobs:
           "version=$v" >> $env:GITHUB_OUTPUT
           Write-Host "Version: $v"
 
+      - name: Google sign-in client (from secrets)
+        shell: pwsh
+        env:
+          GID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GSECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+        run: |
+          if ($env:GID) {
+            "CLIENT_ID = `"$($env:GID)`"`nCLIENT_SECRET = `"$($env:GSECRET)`"" | Set-Content core/google_client.py -Encoding utf8
+            Write-Host "Google sign-in enabled"
+          } else { Write-Host "Google sign-in: no client id secret yet" }
+
       - name: Build app
         run: pyinstaller --noconfirm --clean medquiz.spec
 

@@ -44,17 +44,17 @@ Kısayollar: **A–E** veya **1–5** şık seçer, **Enter** sonraki soruya ge�
 
 ## Hesap: aynı kullanıcıyı başka bilgisayarda kullanmak
 
-Ayarlar → **Hesap — başka bilgisayarlarda kullan** → **Hesabı bağla**. MedQuiz, verilerini bilgisayarındaki bulut
-klasörüne (OneDrive, Google Drive ya da Dropbox; otomatik bulunur) **hesap şifrenle şifreleyerek** koyar:
-API anahtarları ve ayarlar, istatistikler/cevaplar, kelime havuzu, özetler, sohbetler, vakalar ve kütüphane
-(PDF'ler dahil). Diğer bilgisayarda aynı yere ve aynı şifreyle bağlan; her şey gelir, anahtar girmen gerekmez.
+Ayarlar → **Hesap** → **Google ile giriş yap**. Tarayıcıda Google hesabını seçersin; MedQuiz verilerini
+(API anahtarları ve ayarlar, istatistikler, kelime havuzu, özetler, sohbetler, vakalar, kütüphane ve PDF'ler)
+Google Drive'ında **uygulamaya özel gizli alana** (appDataFolder) şifreli olarak koyar. Başka bir bilgisayarda
+aynı Google hesabıyla giriş yapınca her şey gelir; API anahtarı girmen gerekmez.
 
-- Sunucu yok; veriler yalnızca senin bulut hesabında ve bilgisayarlarında durur.
-- Her bilgisayar kendi dosyasını yazar, diğerlerini okuyup birleştirir. Hiçbir bilgisayarın verisi silinmez,
+- MedQuiz Drive'ındaki diğer dosyaları göremez (yalnızca `drive.appdata` izni); gizli alan Drive listende görünmez.
+- Her bilgisayar kendi dosyasını yazar, diğerlerini okuyup birleştirir; hiçbir bilgisayarın verisi silinmez,
   yalnızca senin sildiğin öğeler her yerde silinir. Eşitleme açılışta, 5 dakikada bir ve kapanışta yapılır.
-- Bulut klasörü yoksa: **Yedek dosyası al** → tek, şifreli `.mqbackup` dosyası (USB/e-posta) → diğer bilgisayarda
-  **Yedekten yükle**.
-- Şifre unutulursa buluttaki dosyalar açılamaz (bilgisayarındaki veriler durur).
+- İnternetsiz taşıma: **Yedek dosyası al / Yedekten yükle** (tek, şifreli `.mqbackup` dosyası).
+- Geliştirici notu: Google OAuth istemcisi (Masaüstü uygulaması) GitHub sırları `GOOGLE_CLIENT_ID` ve
+  `GOOGLE_CLIENT_SECRET` ile derlemeye eklenir; kaynak koddan çalıştırırken `MEDQUIZ_GOOGLE_CLIENT_ID/SECRET`.
 
 ## 0) Kurulum ve güncellemeler (aile için)
 

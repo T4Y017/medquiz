@@ -175,8 +175,8 @@ class SettingsPage(QWidget):
         f.addRow("Bugünkü kullanım", self.usage_lbl)
         cl.addLayout(f)
         note = QLabel("ℹ️ Claude Pro veya Google AI Pro/Gemini Advanced gibi sohbet abonelikleri burada kullanılamaz; "
-                      "API anahtarları ayrı faturalandırılır. Anahtarlar bu bilgisayarda saklanır; hesap bağlıysa şifreli "
-                      "olarak senin bulut klasörüne de kopyalanır.")
+                      "API anahtarları ayrı faturalandırılır. Anahtarlar bu bilgisayarda saklanır; Google ile giriş yaptıysan şifreli "
+                      "olarak Google Drive’ındaki gizli MedQuiz alanına da kopyalanır.")
         note.setObjectName("muted")
         note.setWordWrap(True)
         cl.addWidget(note)

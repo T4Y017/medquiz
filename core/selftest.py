@@ -179,6 +179,14 @@ def run(pdf: str | None, out: str) -> int:
 
     _step(results, "Hesap eşitleme (şifreli, iki bilgisayar)", account_sync)
 
+    def google_ready():
+        from . import gdrive
+        cid, _ = gdrive.client_config()
+        import cryptography  # noqa: F401  (paketlenmiş sürümde şifreleme kütüphanesi var mı)
+        return {"google_sign_in": bool(cid), "client": (cid[:12] + "…") if cid else ""}
+
+    _step(results, "Google ile giriş hazırlığı", google_ready)
+
     def update_check():
         from . import updater
         real = updater.__version__

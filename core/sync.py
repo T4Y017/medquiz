@@ -100,11 +100,61 @@ def _fernet(password: str, salt: bytes):
     return Fernet(base64.urlsafe_b64encode(key))
 
 
-class Account:
-    def __init__(self, folder: Path, fernet):
-        self.folder = Path(folder)
-        self.f = fernet
+class FolderStore:
+    """Yerel/bulut klasörü üzerinde dosya deposu (yedek dosyası ve klasörle eşitleme için)."""
 
+    def __init__(self, folder: Path):
+        self.folder = Path(folder)
+
+    def _p(self, name: str) -> Path:
+        return self.folder / name
+
+    def list(self, prefix: str) -> list[tuple[str, float]]:
+        base = self._p(prefix.rsplit("/", 1)[0]) if "/" in prefix else self.folder
+        out = []
+        if base.is_dir():
+            for f in base.iterdir():
+                if f.is_file() and not f.name.endswith((".tmp", ".part")):
+                    rel = f.relative_to(self.folder).as_posix()
+                    if rel.startswith(prefix):
+                        out.append((rel, f.stat().st_mtime))
+        return out
+
+    def exists(self, name: str) -> bool:
+        return self._p(name).exists()
+
+    def read(self, name: str) -> bytes:
+        return self._p(name).read_bytes()
+
+    def write(self, name: str, data: bytes) -> None:
+        p = self._p(name)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write(p, data)
+
+    def download(self, name: str, dest: Path) -> None:
+        shutil.copyfile(self._p(name), dest)
+
+    def upload_file(self, name: str, path: Path) -> None:
+        p = self._p(name)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, p.with_name(p.name + ".part"))
+        os.replace(p.with_name(p.name + ".part"), p)
+
+
+class Account:
+    """Şifreli hesap deposu. Klasör hesabı şifreyle; Google hesabı uygulamaya özel gizli Drive alanında,
+    hesapta saklı rastgele bir anahtarla şifrelenir."""
+
+    def __init__(self, store, fernet, label: str = ""):
+        self.store = store
+        self.f = fernet
+        self.label = label
+
+    @property
+    def folder(self) -> Path:
+        return self.store.folder
+
+    # --- klasör (şifreli)
     @staticmethod
     def exists(base: str) -> bool:
         return (account_dir(base) / "account.json").exists()
@@ -116,15 +166,14 @@ class Account:
         folder = account_dir(base)
         if (folder / "account.json").exists():
             return cls.open(base, password)
-        (folder / "devices").mkdir(parents=True, exist_ok=True)
-        (folder / "library").mkdir(exist_ok=True)
+        folder.mkdir(parents=True, exist_ok=True)
         salt = os.urandom(16)
         f = _fernet(password, salt)
         meta = {"format": FORMAT, "salt": base64.b64encode(salt).decode(), "created_at": time.time(),
                 "check": f.encrypt(b"medquiz-ok").decode(),
                 "note": "MedQuiz hesap klasörü. Silmeyin; dosyalar şifrelidir."}
         _atomic_write(folder / "account.json", json.dumps(meta, indent=2).encode())
-        return cls(folder, f)
+        return cls(FolderStore(folder), f, str(folder))
 
     @classmethod
     def open(cls, base: str, password: str) -> "Account":
@@ -142,9 +191,22 @@ class Account:
             ok = False
         if not ok:
             raise SyncError("Şifre yanlış.")
-        (folder / "devices").mkdir(exist_ok=True)
-        (folder / "library").mkdir(exist_ok=True)
-        return cls(folder, f)
+        return cls(FolderStore(folder), f, str(folder))
+
+    # --- Google Drive (uygulamaya özel alan)
+    @classmethod
+    def google(cls, store, email: str = "") -> "Account":
+        from cryptography.fernet import Fernet
+        if store.exists("account.json"):
+            meta = json.loads(store.read("account.json").decode("utf-8"))
+            if meta.get("format", 1) > FORMAT:
+                raise SyncError("Bu hesap daha yeni bir MedQuiz sürümüyle oluşturulmuş; önce uygulamayı güncelle.")
+            key = meta["key"].encode()
+        else:
+            key = Fernet.generate_key()
+            store.write("account.json", json.dumps({"format": FORMAT, "mode": "google", "key": key.decode(),
+                                                    "created_at": time.time()}).encode())
+        return cls(store, Fernet(key), email)
 
     def seal(self, obj) -> bytes:
         return self.f.encrypt(gzip.compress(json.dumps(obj, ensure_ascii=False).encode("utf-8"), 6))
@@ -339,12 +401,12 @@ class SyncEngine:
 
     # --- kütüphane
     def push_library(self, acc: Account, stats: dict) -> None:
-        lib = acc.folder / "library"
+        st = acc.store
         with self.db._lock:
             docs = self._rows("documents")
         for d in docs:
-            meta = lib / f"{d['uid']}.mql"
-            if meta.exists():
+            meta = f"library/{d['uid']}.mql"
+            if st.exists(meta):
                 continue
             chunks = self.db.doc_chunks(d["id"])
             src = Path(d["source"])
@@ -352,20 +414,19 @@ class SyncEngine:
             try:
                 if src.is_file() and src.stat().st_size <= MAX_LIB_FILE:
                     fname = f"{d['uid']}{src.suffix.lower()}"
-                    if not (lib / fname).exists():
-                        shutil.copyfile(src, lib / (fname + ".part"))
-                        os.replace(lib / (fname + ".part"), lib / fname)
-            except OSError as e:
-                log.warning("Kütüphane dosyası kopyalanamadı (%s): %s", src, e)
+                    if not st.exists(f"library/{fname}"):
+                        st.upload_file(f"library/{fname}", src)
+            except Exception as e:  # noqa: BLE001
+                log.warning("Kütüphane dosyası yüklenemedi (%s): %s", src, e)
                 fname = ""
             doc = {k: v for k, v in d.items() if k != "id"}
-            _atomic_write(meta, acc.seal({"doc": doc, "file": fname,
+            st.write(meta, acc.seal({"doc": doc, "file": fname,
                                           "chunks": [{"idx": ch["idx"], "text": ch["text"],
                                                       "location": ch["location"]} for ch in chunks]}))
             stats["lib_up"] += 1
 
     def pull_library(self, acc: Account, remote_docs: list[dict], stats: dict) -> None:
-        lib = acc.folder / "library"
+        st = acc.store
         with self.db._lock:
             have = {r[0] for r in self.db.conn.execute("SELECT uid FROM documents").fetchall()}
             tomb = {r[0]: r[1] for r in self.db.conn.execute("SELECT uid, at FROM tombstones").fetchall()}
@@ -374,24 +435,25 @@ class SyncEngine:
             uid = d.get("uid")
             if not uid or uid in have or (uid in tomb and tomb[uid] >= (d.get("mtime") or 0)):
                 continue
-            meta = lib / f"{uid}.mql"
-            if not meta.exists():
-                continue          # dosya henüz bulut klasörüne inmemiş olabilir; sonraki eşitlemede
+            meta = f"library/{uid}.mql"
+            if not st.exists(meta):
+                continue          # dosya henüz buluta yüklenmemiş olabilir; sonraki eşitlemede
             try:
-                pack = acc.unseal(meta.read_bytes())
+                pack = acc.unseal(st.read(meta))
             except Exception as e:  # noqa: BLE001
                 log.warning("Kütüphane paketi okunamadı %s: %s", meta, e)
                 continue
             doc = pack["doc"]
             source = doc["source"]
-            if pack.get("file") and (lib / pack["file"]).exists():
+            if pack.get("file") and st.exists(f"library/{pack['file']}"):
                 local_lib.mkdir(exist_ok=True)
                 dst = local_lib / pack["file"]
                 try:
                     if not dst.exists():
-                        shutil.copyfile(lib / pack["file"], dst)
+                        st.download(f"library/{pack['file']}", dst.with_name(dst.name + ".part"))
+                        os.replace(dst.with_name(dst.name + ".part"), dst)
                     source = str(dst)
-                except OSError as e:
+                except Exception as e:  # noqa: BLE001
                     log.warning("Belge dosyası kopyalanamadı: %s", e)
             with self.db._lock:
                 c = self.db.conn
@@ -410,15 +472,17 @@ class SyncEngine:
         stats = {"added": 0, "updated": 0, "deleted": 0, "lib_up": 0, "lib_down": 0, "devices": 0,
                  "settings": False, "errors": []}
         me = self.device_id()
+        if hasattr(acc.store, "index"):
+            acc.store.index(refresh=True)       # Drive: başka bilgisayarların son yazdıklarını gör
         if not push_only:
             snaps = []
-            for f in sorted((acc.folder / "devices").glob("*.mqd")):
-                if f.stem == me:
+            for name, _mt in sorted(acc.store.list("devices/")):
+                if not name.endswith(".mqd") or Path(name).stem == me:
                     continue
                 try:
-                    snaps.append(acc.unseal(f.read_bytes()))
+                    snaps.append(acc.unseal(acc.store.read(name)))
                 except Exception as e:  # noqa: BLE001
-                    stats["errors"].append(f"{f.name}: okunamadı ({type(e).__name__})")
+                    stats["errors"].append(f"{name}: okunamadı ({type(e).__name__})")
             snaps.sort(key=lambda s: s.get("at", 0))
             stats["devices"] = len(snaps)
             for sn in snaps:
@@ -435,19 +499,14 @@ class SyncEngine:
                                                          newest.get("settings_saved_at") or 0, initial)
         if library:
             self.push_library(acc, stats)
-        _atomic_write(acc.folder / "devices" / f"{me}.mqd", acc.seal(self.snapshot()))
+        acc.store.write(f"devices/{me}.mqd", acc.seal(self.snapshot()))
         stats["at"] = time.time()
         return stats
 
     def devices(self, acc: Account) -> list[dict]:
-        out = []
-        for f in sorted((acc.folder / "devices").glob("*.mqd")):
-            try:
-                st = f.stat()
-                out.append({"device": f.stem, "me": f.stem == self.device_id(), "modified": st.st_mtime})
-            except OSError:
-                pass
-        return out
+        me = self.device_id()
+        return [{"device": Path(n).stem, "me": Path(n).stem == me, "modified": mt}
+                for n, mt in sorted(acc.store.list("devices/")) if n.endswith(".mqd")]
 
 
 # ---------------------------------------------------------------- yedek dosyası (bulut yoksa)

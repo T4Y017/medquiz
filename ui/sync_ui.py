@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 
+from core import gdrive
 from core import sync as S
 
 from .context import AppContext
@@ -150,18 +151,27 @@ class SyncController(QObject):
 
     @property
     def linked(self) -> bool:
-        return bool(self.cfg.get("folder"))
+        return bool(self.cfg.get("folder") or self.cfg.get("refresh_token"))
+
+    @property
+    def is_google(self) -> bool:
+        return bool(self.cfg.get("refresh_token"))
 
     def describe(self) -> str:
         if not self.linked:
-            return "Bağlı değil. Bağlarsan bu kullanıcıyı başka bilgisayarlarda API anahtarı girmeden kullanırsın."
+            return ("Giriş yapılmadı. Google hesabınla giriş yaparsan bu kullanıcıyı (API anahtarları, istatistikler, "
+                    "kelimeler, özetler, kütüphane) başka bilgisayarlarda da aynı hesapla kullanırsın.")
         c = self.cfg
-        return (f"✓ Bağlı: {S.account_dir(c['folder'])}\nSon eşitleme: {_when(c.get('last'))}"
+        who = f"Google hesabı: {c.get('email') or '?'}" if self.is_google else f"Klasör: {S.account_dir(c['folder'])}"
+        return (f"✓ {who}\nSon eşitleme: {_when(c.get('last'))}"
                 + (f" · {c['last_note']}" if c.get("last_note") else ""))
 
     def _account(self) -> S.Account:
         if self._acc is None:
             c = self.cfg
+            if self.is_google:
+                self._acc = S.Account.google(gdrive.DriveStore(gdrive.GoogleAuth(c["refresh_token"])), c.get("email", ""))
+                return self._acc
             if not Path(c["folder"]).exists():
                 raise S.SyncError(f"Eşitleme klasörü bulunamadı: {c['folder']} (bulut uygulaması kapalı olabilir).")
             self._acc = S.Account.open(c["folder"], c.get("password", ""))
@@ -203,13 +213,69 @@ class SyncController(QObject):
 
         self.ctx.runner.start(job, on_result=done, on_error=fail)
 
+    def google_sign_in(self) -> None:
+        if not gdrive.available():
+            QMessageBox.information(self.parent_w, "Google ile giriş",
+                                    "Bu sürümde Google ile giriş henüz etkin değil. Bir sonraki güncellemede gelecek.")
+            return
+        from PySide6.QtWidgets import QProgressDialog
+        state = {"cancel": False}
+        dlg = QProgressDialog("Tarayıcıda Google hesabını seç ve MedQuiz'e izin ver…\n\n"
+                              "MedQuiz yalnızca kendi verilerini Drive'ında gizli bir uygulama alanına yazar; "
+                              "Drive'ındaki diğer dosyaları göremez.", "Vazgeç", 0, 0, self.parent_w)
+        dlg.setWindowTitle("Google ile giriş")
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(0)
+        dlg.canceled.connect(lambda: state.__setitem__("cancel", True))
+        dlg.show()
+        self.busy = True
+        engine = self.engine
+
+        def job(progress, task):
+            tok = gdrive.sign_in(cancelled=lambda: state["cancel"] or task.cancelled)
+            progress("Google hesabına bağlanıldı; veriler eşitleniyor…")
+            store = gdrive.DriveStore(gdrive.GoogleAuth(tok["refresh_token"]))
+            existed = bool(store.list("devices/"))
+            acc = S.Account.google(store, tok["email"])
+            st = engine.sync(acc, initial=existed)
+            return tok, acc, st, existed
+
+        def prog(msg):
+            dlg.setLabelText(msg)
+
+        def done(res):
+            tok, acc, st, existed = res
+            dlg.close()
+            self.busy = False
+            self._acc = acc
+            self.ctx.settings.extra["sync"] = {"refresh_token": tok["refresh_token"], "email": tok["email"],
+                                               "last": st["at"], "last_note": summarize(st)}
+            self.ctx.settings.save(touch=False)
+            self._after(st, initial=existed)
+            self.timer.start()
+            msg = (f"{tok['email']} hesabındaki MedQuiz verilerin bu bilgisayara geldi:\n{summarize(st)}" if existed else
+                   f"{tok['email']} hesabına bağlandın; bu bilgisayardaki veriler Google Drive'ına yüklendi.\n\n"
+                   "Başka bir bilgisayarda: Ayarlar → Hesap → “Google ile giriş yap”, aynı Google hesabı.")
+            QMessageBox.information(self.parent_w, "Google ile giriş", msg)
+
+        def fail(e):
+            dlg.close()
+            self.busy = False
+            self.status.emit(self.describe())
+            if not state["cancel"]:
+                QMessageBox.warning(self.parent_w, "Google ile giriş", str(e))
+
+        self.ctx.runner.start(job, on_progress=prog, on_result=done, on_error=fail)
+
     def unlink(self) -> None:
         if QMessageBox.question(self.parent_w, "Bağlantıyı kaldır",
-                                "Bu bilgisayarın hesapla eşitlenmesi durdurulsun mu?\n\n"
-                                "Bu bilgisayardaki veriler ve bulut klasöründeki veriler silinmez.") != QMessageBox.Yes:
+                                "Bu bilgisayarda hesaptan çıkılsın ve eşitleme durdurulsun mu?\n\n"
+                                "Bu bilgisayardaki veriler ve hesaptaki (Google Drive) veriler silinmez.") != QMessageBox.Yes:
             return
-        self.ctx.settings.extra.pop("sync", None)
+        old = self.ctx.settings.extra.pop("sync", None) or {}
         self.ctx.settings.save(touch=False)
+        if old.get("refresh_token"):
+            gdrive.revoke(old["refresh_token"])
         self._acc = None
         self.timer.stop()
         self.status.emit(self.describe())
@@ -237,7 +303,7 @@ class SyncController(QObject):
 
         def fail(e):
             self.busy = False
-            self._acc = None if "Şifre" in str(e) else self._acc
+            self._acc = None
             self.status.emit(f"⚠ Eşitlenemedi: {e}")
             if not silent:
                 QMessageBox.warning(self.parent_w, "Eşitleme", str(e))
@@ -245,6 +311,8 @@ class SyncController(QObject):
         self.ctx.runner.start(job, on_result=done, on_error=fail)
 
     def _remote_changed(self) -> bool:
+        if self.is_google:
+            return True          # Drive'ı sorgulamak bir istek; 5 dakikada bir eşitlemek zaten ucuz
         try:
             acc_dir = S.account_dir(self.cfg["folder"]) / "devices"
             newest = max((f.stat().st_mtime for f in acc_dir.glob("*.mqd")), default=0)
@@ -316,6 +384,19 @@ class SyncController(QObject):
                               on_error=lambda e: QMessageBox.warning(self.parent_w, "Yedek yüklenemedi", e))
 
 
+def _google_icon():
+    from PySide6.QtCore import QByteArray
+    from PySide6.QtGui import QIcon, QPixmap
+    svg = (b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><circle cx="24" cy="24" r="23" fill="white"/>'
+           b'<path fill="#4285F4" d="M43.6 24.5c0-1.6-.1-2.8-.4-4H24v7.4h11.2c-.5 2.6-2 4.8-4.3 6.3v5.2h6.9c4-3.7 5.8-9.1 '
+           b'5.8-14.9z"/><path fill="#34A853" d="M24 44c5.8 0 10.6-1.9 14.1-5.2l-6.9-5.2c-1.9 1.3-4.3 2-7.2 2-5.6 0-10.3-3.7-12-8.8H4.9v5.4C8.4 39.2 15.6 44 24 44z"/>'
+           b'<path fill="#FBBC05" d="M12 26.8c-.4-1.3-.7-2.6-.7-4s.3-2.7.7-4v-5.4H4.9C3.4 16.3 2.6 19.6 2.6 22.8s.8 6.5 2.3 9.4z"/>'
+           b'<path fill="#EA4335" d="M24 10.3c3.1 0 5.9 1.1 8.1 3.2l6.1-6.1C34.6 4 29.8 2 24 2 15.6 2 8.4 6.8 4.9 13.4l7.1 5.4c1.7-5.1 6.4-8.5 12-8.5z"/></svg>')
+    pm = QPixmap()
+    pm.loadFromData(QByteArray(svg), "SVG")
+    return QIcon(pm)
+
+
 class AccountCard(QWidget):
     """Ayarlar sayfasındaki 'Hesap' kartının içeriği."""
 
@@ -328,12 +409,14 @@ class AccountCard(QWidget):
         self.lbl.setWordWrap(True)
         lay.addWidget(self.lbl)
         row = QHBoxLayout()
-        self.link_btn = QPushButton("🔗 Hesabı bağla…")
+        self.link_btn = QPushButton("  Google ile giriş yap")
+        self.link_btn.setIcon(_google_icon())
         self.link_btn.setObjectName("primary")
-        self.link_btn.clicked.connect(ctl.link)
+        self.link_btn.setToolTip("Aynı Google hesabıyla giriş yaptığın her bilgisayarda aynı kullanıcı")
+        self.link_btn.clicked.connect(ctl.google_sign_in)
         self.sync_btn = QPushButton("Şimdi eşitle")
         self.sync_btn.clicked.connect(lambda: ctl.sync(silent=False))
-        self.unlink_btn = QPushButton("Bağlantıyı kaldır")
+        self.unlink_btn = QPushButton("Çıkış yap")
         self.unlink_btn.clicked.connect(ctl.unlink)
         exp = QPushButton("Yedek dosyası al…")
         exp.setToolTip("Bulut klasörü yoksa: tüm verini tek, şifreli bir dosyaya kaydet (USB/e-posta ile taşı)")
