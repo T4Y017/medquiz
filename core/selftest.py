@@ -181,9 +181,20 @@ def run(pdf: str | None, out: str) -> int:
 
     def google_ready():
         from . import gdrive
-        cid, _ = gdrive.client_config()
+        cid, _sec = gdrive.client_config()
         import cryptography  # noqa: F401  (paketlenmiş sürümde şifreleme kütüphanesi var mı)
-        return {"google_sign_in": bool(cid), "client": (cid[:12] + "…") if cid else ""}
+        if not cid:
+            return {"google_sign_in": False}
+        # İstemci kimliği/gizli anahtar Google'da geçerli mi? Sahte bir kodla belirteç isteği: geçerli istemcide
+        # Google 'invalid_grant' der, yanlış istemcide 'invalid_client'.
+        import requests
+        r = requests.post(gdrive.TOKEN_URL, data={"code": "selftest", "client_id": cid, "client_secret": _sec,
+                                                  "redirect_uri": "http://127.0.0.1",
+                                                  "grant_type": "authorization_code"}, timeout=20)
+        err = (r.json() if r.headers.get("content-type", "").startswith("application/json") else {}).get("error", "")
+        if err == "invalid_client" or err == "unauthorized_client":
+            raise RuntimeError(f"Google istemci kimliği/gizli anahtarı geçersiz: {err}")
+        return {"google_sign_in": True, "client": cid[:12] + "…", "google_check": err or r.status_code}
 
     _step(results, "Google ile giriş hazırlığı", google_ready)
 
