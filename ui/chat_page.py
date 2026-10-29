@@ -15,6 +15,8 @@ from PySide6.QtWidgets import (
 from core.config import PROVIDERS
 from core.quiz import source_label
 
+from core.mdfix import normalize_markdown as fix_md
+
 from .context import AppContext
 from .flow import FlowLayout
 from .translate_ui import attach_menu, open_translation
@@ -450,6 +452,6 @@ class ChatPage(QWidget):
             md.append("\n---\n")
         sb = self.view.verticalScrollBar()
         at_bottom = sb.value() >= sb.maximum() - 40
-        self.view.setMarkdown("\n".join(md))
+        self.view.setMarkdown(fix_md("\n".join(md)))
         if at_bottom or self.busy:
             sb.setValue(sb.maximum())

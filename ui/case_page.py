@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
 from core.case import LEVELS, CaseEngine, CaseRequest
 
 from . import style
+from core.mdfix import normalize_markdown as fix_md
+
 from .context import AppContext
 from .quiz_page import DocPicker
 from .translate_ui import attach_menu, open_translation
@@ -931,7 +933,7 @@ class CasePage(QWidget):
                 f"**Eğitmen** _({m['model']})_**:**" if m.get("model") else "**Eğitmen:**")
             body = m["content"] or ("_yazıyor…_" if self.chat_busy else "")
             md.append(f"{who} {body}\n")
-        self.chat_view.setMarkdown("\n\n".join(md))
+        self.chat_view.setMarkdown(fix_md("\n\n".join(md)))
         sb = self.chat_view.verticalScrollBar()
         sb.setValue(sb.maximum())
 

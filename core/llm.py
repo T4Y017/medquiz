@@ -264,7 +264,7 @@ class LLMClient:
         except Exception as e:  # noqa: BLE001
             raise _classify(e, self.provider) from e
 
-    def complete_json(self, system: str, user: str, max_tokens: int = 6000,
+    def complete_json(self, system: str, user, max_tokens: int = 6000,
                       temperature: float = 0.7, retries: int = 1) -> dict:
         """JSON döndürmesi beklenen istek; bozuk JSON'da bir kez düzeltme ister."""
         messages = [{"role": "user", "content": user}]
@@ -438,7 +438,7 @@ class RoutedLLM:
     def complete(self, system: str, messages: list[dict], max_tokens: int = 4096, temperature: float = 0.7) -> str:
         return self._run(lambda c: c.complete(system, messages, max_tokens=max_tokens, temperature=temperature))
 
-    def complete_json(self, system: str, user: str, max_tokens: int = 6000, temperature: float = 0.7,
+    def complete_json(self, system: str, user, max_tokens: int = 6000, temperature: float = 0.7,
                       retries: int = 1) -> dict:
         return self._run(lambda c: c.complete_json(system, user, max_tokens=max_tokens,
                                                    temperature=temperature, retries=retries))

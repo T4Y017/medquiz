@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterator
 
+from . import mdfix
 from .db import Database
 from .llm import LLMError
 
@@ -27,10 +28,20 @@ dikkatle oku ve kullanıcının talimatını eksiksiz uygula.
 GENEL KURALLAR:
 - Yalnızca kaynaktaki bilgiyi kullan; veri uydurma. Kaynakta olmayan bir şey istenirse "kaynakta yok" de.
 - Çıktıyı MARKDOWN olarak yaz: ana bölümler "## ", alt bölümler "### ", maddeler "- ".
-- TABLOLAR: kaynaktaki her tabloyu, kaynaktaki sırayla, Türkçeye çevirerek GERÇEK MARKDOWN TABLOSU olarak ver
-  (| Sütun | Sütun | ve |---| satırı). İçeriği ve satır sırasını koru, her satırda bir öğe. Alt kategori
+- TABLOLAR: kaynaktaki her tabloyu, kaynaktaki sırayla, Türkçeye çevirerek GERÇEK MARKDOWN TABLOSU olarak ver.
+  Asla madde listesine ya da düz metne çevirme. İçeriği ve satır sırasını koru, her satırda bir öğe. Alt kategori
   başlıklarını tablo içinde **kalın** yaz, altındaki öğeleri ayrı satırlarda "↳ " ile girintili göster.
-  Tablonun üstüne "**Tablo N: başlık**" yaz.
+  Biçim tam olarak şöyle olmalı (başlık satırı, BOŞ SATIR, sonra tablo; kod bloğu ``` KULLANMA):
+
+  **Tablo 1: Başlık**
+
+  | Sütun 1 | Sütun 2 |
+  |---|---|
+  | hücre | hücre |
+
+- ÖZET TABLOLARI: Kaynağın kendi tablolarına ek olarak, yapılandırılabilir bilgiyi (sınıflama, ilaç–doz,
+  ayırıcı tanı, karşılaştırma, tanı kriterleri, evreleme) kendi oluşturduğun Markdown tablolarıyla da özetle.
+  Bu tabloların başlığına "**Özet tablosu: ...**" yaz.
 - Grafik, şema, akış diyagramı, harita gibi görselleri ilişkileriyle birlikte açıklayıcı Türkçe paragrafla anlat;
   üstüne "**Şekil N: başlık**" yaz.
 - Birimler: ağırlık kg, boy cm, hacim mL; diğer birimleri de uygun SI birimine çevir.
@@ -50,6 +61,9 @@ nedenler ve risk faktörleri, belirti ve bulgular, tanı, tedavi (ilaç dozları
 _STEP_VISUALS = """### 3. Tablolar, şekiller ve diğer görseller
 Kaynaktaki her görseli kaynaktaki sırayla işle: tabloları Türkçe Markdown tablo olarak, grafik/şema/akış
 diyagramlarını ilişkileri açıklayan Türkçe paragraf olarak ver. Hiçbirini atlama."""
+_STEP_SUMTABLES = """### Özet tabloları
+Kaynaktaki bilgiyi en az 2 Markdown tablosuyla özetle (ör. ilaç | doz | not; tanı | ayırt ettiren bulgu | test;
+sınıf | özellik | örnek). Yalnızca kaynaktaki bilgiyi kullan."""
 _STEP_REVIEW = """### 4. Tekrar soruları (tam 10)
 Bilişsel düzeylerde sırayla ilerle: bilgi, kavrama, uygulama, analiz, sentez, değerlendirme (10 soruyu altı düzeye
 yay). Kaynaktaki konu sırasını izle; her soru farklı bir yönü ölçsün. Her soruyu madde olarak yaz; hemen altında
@@ -69,14 +83,17 @@ TEMPLATES: dict[str, dict] = {
         "name": "Detaylı özet (sınıflama + klinik protokol + tablolar)",
         "desc": "Kaynaktaki sınıflamalar, kapsamlı klinik protokol ve tüm tablolar/şekiller Türkçe.",
         "prompt": "[TOPIC] konusundaki kaynağı sistematik ve eksiksiz analiz et. Şu bölümleri yaz:\n\n"
-                  + "\n\n".join([_STEP_CLASS, _STEP_PROTOCOL, _STEP_VISUALS, _STEP_ILLUSTRATION]),
+                  + "\n\n".join([_STEP_CLASS, _STEP_PROTOCOL, _STEP_VISUALS, _STEP_SUMTABLES, _STEP_ILLUSTRATION]),
+        "tables": True,
     },
     "detayli_sorular": {
         "name": "Detaylı özet + 10 tekrar sorusu",
         "desc": "Detaylı özetin üstüne Bloom düzeylerine yayılmış 10 soru ve görsele dayalı sorular.",
         "prompt": "[TOPIC] konusundaki kaynağı sistematik ve eksiksiz analiz et. Şu bölümleri yaz:\n\n"
-                  + "\n\n".join([_STEP_CLASS, _STEP_PROTOCOL, _STEP_VISUALS, _STEP_REVIEW, _STEP_PICTURE])
+                  + "\n\n".join([_STEP_CLASS, _STEP_PROTOCOL, _STEP_VISUALS, _STEP_SUMTABLES, _STEP_REVIEW,
+                                 _STEP_PICTURE])
                   + "\n\n" + QUESTION_RULES,
+        "tables": True,
     },
     "pediatrik": {
         "name": "Pediatrik vaka seti (5 vaka × 5 soru)",
@@ -87,12 +104,13 @@ TEMPLATES: dict[str, dict] = {
         "name": "Tam analiz (7 adım + son kontrol)",
         "desc": "Eklediğin komutun tamamı: sınıflama, protokol, görseller, 10 soru, görsel soruları, 5 pediatrik vaka, şema.",
         "prompt": "[TOPIC] konusundaki kaynağı sistematik ve eksiksiz analiz et. Adımları sırayla uygula:\n\n"
-                  + "\n\n".join([_STEP_CLASS, _STEP_PROTOCOL, _STEP_VISUALS, _STEP_REVIEW, _STEP_PICTURE,
-                                 _STEP_PEDS, _STEP_ILLUSTRATION])
+                  + "\n\n".join([_STEP_CLASS, _STEP_PROTOCOL, _STEP_VISUALS, _STEP_SUMTABLES, _STEP_REVIEW,
+                                 _STEP_PICTURE, _STEP_PEDS, _STEP_ILLUSTRATION])
                   + "\n\n" + QUESTION_RULES
                   + "\n\nSON KONTROL (yanıtlamadan önce): tam 10 tekrar sorusu ve 5×5 vaka sorusu olduğundan, her "
                     "sorunun bilgi veren bir cümleyle başladığından, izin verilenler dışında kısaltma olmadığından, "
                     "birimlerin kg/cm/mL olduğundan ve kaynaktaki her tablo/şeklin sırayla işlendiğinden emin ol.",
+        "tables": True,
     },
     "en_cloze": {
         "name": "İngilizce: boşluk doldurma (cloze) testi",
@@ -124,6 +142,7 @@ class Packet:
     pdf: bytes | None = None
     text: str = ""
     pages: list[int] = field(default_factory=list)
+    captions: list[tuple[str, str]] = field(default_factory=list)   # kaynakta görülen tablo başlıkları
 
 
 @dataclass
@@ -282,6 +301,8 @@ class SummaryEngine:
                 packets = packets[:5]
         if not packets:
             raise LLMError("Seçilen aralıkta işlenecek içerik bulunamadı.")
+        for pk in packets:
+            pk.captions = source_captions(pk.text or self._text_for(chunks, pk.pages))
         scope = _ranges(pages) if pages and (is_pdf or any(_page_of(c["location"]) for c in chunks)) else "tümü"
         if topic.strip() and not pages_spec.strip():
             scope = f"“{topic}” ile ilgili {scope}"
@@ -294,12 +315,19 @@ class SummaryEngine:
 
     # ------------------------------------------------------------------ çalıştırma
     def run(self, src: Source, prompt: str, topic: str = "",
-            should_stop: Callable[[], bool] | None = None) -> Iterator[str]:
-        """Markdown'u parça parça üretir (akış). Birden çok paket varsa her biri ayrı başlık altında."""
+            should_stop: Callable[[], bool] | None = None, want_tables: bool | None = None) -> Iterator[str]:
+        """Markdown'u parça parça üretir (akış). Birden çok paket varsa her biri ayrı başlık altında.
+
+        Tablo güvencesi: kaynakta "Tablo N" başlıkları varken çıktıda tablo olarak verilmemişlerse, eksik
+        tablolar ayrı bir istekle yapılandırılmış (JSON) olarak çıkarılır ve tablo olarak eklenir. Tablo istenen
+        şablonlarda çıktıda hiç tablo yoksa özetten özet tabloları üretilir."""
         from .quiz import make_llm
         instr = prompt.replace("[TOPIC]", topic.strip() or src.title)
+        if want_tables is None:
+            want_tables = bool(re.search(r"tablo|table", prompt, re.IGNORECASE))
         multi = len(src.packets) > 1
         self.last_label = ""
+        self.table_report = {"source_captions": 0, "tables_in_output": 0, "extracted": 0, "summary_tables": 0}
         for i, pk in enumerate(src.packets, 1):
             if should_stop and should_stop():
                 return
@@ -308,20 +336,117 @@ class SummaryEngine:
             head = (f"KAYNAK: {src.title} ({pk.label})\n"
                     + (f"(Bu, uzun bir kaynağın {i}/{len(src.packets)}. bölümüdür; yalnızca bu bölümü işle.)\n"
                        if multi else ""))
-            parts: list[dict] = []
-            if pk.pdf:
-                parts.append({"type": "pdf", "data": pk.pdf, "name": f"{src.title[:40]}.pdf"})
-                parts.append({"type": "text", "text": head + "\nTALİMAT:\n" + instr})
-            else:
-                parts.append({"type": "text", "text": head + "\nKAYNAK METİN:\n" + pk.text + "\n\n=====\nTALİMAT:\n"
-                              + instr})
+            if pk.captions:
+                head += ("Bu bölümde şu tablolar var; HER BİRİNİ Markdown tablo olarak ver: "
+                         + "; ".join(c for _, c in pk.captions) + "\n")
+            parts = self._parts(src, pk, head + "\nTALİMAT:\n" + instr)
             llm = make_llm(self.llm_factory, "heavy")
+            out = ""
             for piece in llm.stream(SYSTEM_SUMMARY, [{"role": "user", "content": parts}], max_tokens=30000,
                                     temperature=0.3):
                 if should_stop and should_stop():
                     return
+                out += piece
                 yield piece
             self.last_label = getattr(llm, "label", "")
+            fixed = mdfix.normalize_markdown(out)
+            n_tables = mdfix.count_tables(fixed)
+            self.table_report["source_captions"] += len(pk.captions)
+            self.table_report["tables_in_output"] += n_tables
+            # 1) kaynaktaki tablolardan eksik kalan var mı?
+            missing = []
+            if pk.captions:
+                have = mdfix.table_numbers_in(fixed)
+                missing = [c for c in pk.captions if c[0] not in have]
+                if not have and n_tables >= len(pk.captions):
+                    missing = []                       # tablolar verilmiş, yalnızca numarasız
+            if missing and not (should_stop and should_stop()):
+                try:
+                    md = self.extract_tables(src, pk, missing)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("Tablo çıkarma başarısız: %s", e)
+                    md = ""
+                if md:
+                    self.table_report["extracted"] += mdfix.count_tables(md)
+                    n_tables += mdfix.count_tables(md)
+                    yield "\n\n## Kaynaktaki tablolar (eksiksiz)\n\n" + md + "\n"
+            # 2) tablo istenen şablonda hiç tablo yoksa: özet tabloları
+            if want_tables and n_tables == 0 and len(fixed) > 400 and not (should_stop and should_stop()):
+                try:
+                    md = self.summary_tables(fixed)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("Özet tablosu üretilemedi: %s", e)
+                    md = ""
+                if md:
+                    self.table_report["summary_tables"] += mdfix.count_tables(md)
+                    yield "\n\n## Özet tabloları\n\n" + md + "\n"
+
+    def _parts(self, src: Source, pk: Packet, text: str) -> list[dict]:
+        if pk.pdf:
+            return [{"type": "pdf", "data": pk.pdf, "name": f"{src.title[:40]}.pdf"}, {"type": "text", "text": text}]
+        return [{"type": "text", "text": "KAYNAK METİN:\n" + pk.text + "\n\n=====\n" + text}]
+
+    def extract_tables(self, src: Source, pk: Packet, captions: list[tuple[str, str]]) -> str:
+        """Belirtilen tabloları kaynaktan JSON olarak çıkarır ve Markdown tabloya çevirir (biçim garantili)."""
+        from . import normalize as nz
+        from .quiz import make_llm
+        want = "\n".join(f"- {c}" for _, c in captions)
+        llm = make_llm(self.llm_factory, "heavy")
+        data = llm.complete_json(SYSTEM_TABLES, self._parts(src, pk, f"Çıkarılacak tablolar:\n{want}"),
+                                 max_tokens=16000, temperature=0.1)
+        out = []
+        for t in nz.items(data, "tables", "tablolar"):
+            if not isinstance(t, dict):
+                continue
+            headers = [nz.text(h) for h in (t.get("headers") or t.get("columns") or [])]
+            rows = [[nz.text(c) for c in r] if isinstance(r, list) else
+                    [nz.text(v) for v in r.values()] if isinstance(r, dict) else [nz.text(r)]
+                    for r in (t.get("rows") or [])]
+            if not rows:
+                continue
+            if not headers:
+                headers, rows = rows[0], rows[1:]
+            num = nz.text(t.get("number") or "")
+            title = nz.text(t.get("title") or "")
+            cap = f"**Tablo {num}: {title}**" if num else f"**{title or 'Tablo'}**"
+            out.append(cap + "\n\n" + mdfix.rows_to_markdown(headers, rows))
+        return "\n\n".join(out)
+
+    def summary_tables(self, summary_md: str) -> str:
+        from .quiz import make_llm
+        llm = make_llm(self.llm_factory, "light")
+        md = llm.complete(SYSTEM_SUMTABLES, [{"role": "user", "content": summary_md[:40000]}], max_tokens=6000,
+                          temperature=0.2)
+        md = mdfix.normalize_markdown(md)
+        return md if mdfix.count_tables(md) else ""
+
+
+SYSTEM_TABLES = """Sen titiz bir tıp yayını editörüsün. Verilen kaynaktan (PDF sayfaları ya da metin) istenen TABLOLARI
+eksiksiz ve birebir çıkar; hücre içeriklerini Türkçeye çevir (ilaç adları, sayılar, dozlar ve birimler aynen kalsın;
+birimleri kg/cm/mL'ye çevir). Satır ve sütun sırasını koru, satır ekleme ya da çıkarma. Birleştirilmiş hücreleri
+ilgili her satıra tekrar yaz. Alt kategori satırlarını tek hücrede "**başlık**" olarak, altındaki öğeleri "↳ öğe"
+olarak yaz. YALNIZCA şu JSON'u döndür:
+{"tables": [{"number": "1", "title": "Türkçe tablo başlığı", "headers": ["Sütun 1", "Sütun 2"],
+             "rows": [["hücre", "hücre"], ["hücre", "hücre"]]}]}"""
+
+SYSTEM_SUMTABLES = """Sen tıp eğitimi için özet tabloları hazırlayan bir editörsün. Verilen Türkçe özetteki bilgiyi
+2-5 adet öğretici MARKDOWN TABLOSU hâlinde düzenle (ör. ilaç | doz | not; tanı | ayırt ettiren bulgu | tanı testi;
+sınıf | özellik | örnek; evre | kriter | yaklaşım). Yalnızca özette geçen bilgiyi kullan, yeni bilgi ekleme.
+Her tablonun üstüne "**Özet tablosu: başlık**" yaz ve bir boş satır bırak. Kod bloğu (```) kullanma.
+Tablolar dışında başka metin yazma."""
+
+
+def source_captions(text: str) -> list[tuple[str, str]]:
+    """Kaynak metinde tablo başlıkları ("Tablo 1. ...", "Table 2: ..."); metin içi atıfları ("Tablo 1'de") almaz."""
+    seen, out = set(), []
+    for m in re.finditer(r"(?:^|\n|\s)((?:Tablo|Table|Çizelge)\s*(\d{1,3}(?:\.\d{1,2})?)\s*[.:\-–]\s*"
+                         r"([A-ZÇĞİÖŞÜ0-9][^\n]{2,110}))", text or ""):
+        num = m.group(2)
+        if num in seen:
+            continue
+        seen.add(num)
+        out.append((num, " ".join(m.group(1).split())[:120]))
+    return out[:15]
 
 
 def vocab_rows(markdown: str) -> list[dict]:

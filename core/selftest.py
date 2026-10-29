@@ -215,12 +215,19 @@ def run(pdf: str | None, out: str) -> int:
             from .summary import TEMPLATES, SummaryEngine
             se = SummaryEngine(db, retr2, factory)
             doc = db.list_documents()[0]
-            src = se.build_source(doc["id"], "1-3")
-            md = "".join(se.run(src, TEMPLATES["detayli"]["prompt"], "diyabetik ketoasidoz"))
+            from .mdfix import count_tables, normalize_markdown
+            src = se.build_source(doc["id"], "6-7")       # test kitabında 2 gerçek ızgara tablosu olan sayfalar
+            md = normalize_markdown("".join(se.run(src, TEMPLATES["detayli"]["prompt"], "diyabetik ketoasidoz",
+                                                   want_tables=True)))
+            n_tab = count_tables(md)
             if len(md) < 300:
                 raise RuntimeError(f"Özet çok kısa: {md[:200]!r}")
-            return {"pdf_packet": bool(src.packets[0].pdf), "chars": len(md), "has_table": "|---" in md.replace(" ", ""),
-                    "headings": [l[:50] for l in md.splitlines() if l.startswith("#")][:6], "model": se.last_label}
+            if n_tab < 2:
+                raise RuntimeError(f"Özette tablo eksik ({n_tab}); rapor: {se.table_report}; {md[:300]!r}")
+            first = md[md.index("|"):][:240] if "|" in md else ""
+            return {"pdf_packet": bool(src.packets[0].pdf), "captions": [c for _, c in src.packets[0].captions],
+                    "tables": n_tab, "report": se.table_report, "chars": len(md), "first_table": first,
+                    "model": se.last_label}
 
         def case(ce=ce):
             r = ce.generate(CaseRequest(topic="diyabetik ketoasidoz", level="Öğrenci", paraclinic=True, test_count=3))

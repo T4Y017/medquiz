@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QTextBrowser, QVBoxLayout, QWidget,
 )
 
+from core.mdfix import normalize_markdown as fix_md
 from core.summary import TEMPLATES, pdf_page_count, vocab_rows
 
 from . import style
@@ -305,6 +306,7 @@ class SummaryPage(QWidget):
             QMessageBox.warning(self, "API anahtarı gerekli", "Lütfen önce Ayarlar sekmesinden API anahtarınızı girin.")
             return
         key, name, prompt = self._template()
+        want_tables = TEMPLATES[key].get("tables", False) if key in TEMPLATES else None
         pages, topic = self.pages_le.text().strip(), self.topic_le.text().strip()
         engine = self.ctx.summary_engine
         try:
@@ -328,7 +330,8 @@ class SummaryPage(QWidget):
         self._state = state
 
         def job(progress, task):
-            for piece in engine.run(src, prompt, topic, should_stop=lambda: state["stop"] or task.cancelled):
+            for piece in engine.run(src, prompt, topic, should_stop=lambda: state["stop"] or task.cancelled,
+                                    want_tables=want_tables):
                 progress(piece)
             return getattr(engine, "last_label", "")
 
@@ -356,7 +359,7 @@ class SummaryPage(QWidget):
         self.task = None
         if self.current is None:
             return
-        self.current["markdown"] = self.buf.strip()
+        self.current["markdown"] = fix_md(self.buf.strip())
         self.current["model"] = label
         if err and not self.current["markdown"]:
             self.status.setText("")
@@ -377,7 +380,7 @@ class SummaryPage(QWidget):
         if self.current is not None:
             sb = self.view.verticalScrollBar()
             at_end = sb.value() >= sb.maximum() - 60
-            self.view.setMarkdown(self._header(self.current) + (self.buf or "_Kaynak okunuyor…_"))
+            self.view.setMarkdown(self._header(self.current) + (fix_md(self.buf) or "_Kaynak okunuyor…_"))
             if at_end:
                 sb.setValue(sb.maximum())
 
@@ -402,7 +405,7 @@ class SummaryPage(QWidget):
             self.vocab_btn.hide()
             return
         if not streaming:
-            self.view.setMarkdown(self._header(c) + c["markdown"])
+            self.view.setMarkdown(self._header(c) + fix_md(c["markdown"]))
             self.view.verticalScrollBar().setValue(0)
         else:
             self._render_buf()
@@ -491,7 +494,7 @@ def write_markdown_pdf(markdown: str, path: str, title: str = "") -> bool:
     doc = QTextDocument()
     doc.setDefaultStyleSheet("body { font-family: 'Segoe UI', 'Noto Sans', Arial; font-size: 10pt; } "
                              "table { border-collapse: collapse; } td, th { border: 1px solid #cbd5e1; padding: 4px; }")
-    doc.setMarkdown(markdown)
+    doc.setMarkdown(fix_md(markdown))
     writer = QPdfWriter(path)
     writer.setPageSize(QPageSize(QPageSize.A4))
     writer.setPageMargins(QMarginsF(16, 16, 16, 16), QPageLayout.Millimeter)
