@@ -8,7 +8,7 @@ from pathlib import Path
 from PySide6.QtCore import QMarginsF, Qt, QTimer, Signal
 from PySide6.QtGui import QGuiApplication, QPageLayout, QPageSize, QPdfWriter, QTextDocument
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel,
+    QAbstractItemView, QHeaderView, QTableWidget, QTableWidgetItem, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSplitter,
     QTextBrowser, QVBoxLayout, QWidget,
 )
@@ -55,7 +55,7 @@ class TemplateDialog(QDialog):
 
 
 class SummaryPage(QWidget):
-    quiz_requested = Signal(int, str)       # doc_id, konu
+    quiz_requested = Signal(list, str)      # belge kimlikleri, konu
 
     def __init__(self, ctx: AppContext):
         super().__init__()
@@ -93,11 +93,24 @@ class SummaryPage(QWidget):
             l.setObjectName("muted")
             return l
 
-        self.doc_cb = QComboBox()
-        self.doc_cb.setMinimumWidth(260)
-        self.doc_cb.currentIndexChanged.connect(self._doc_changed)
-        self.pages_le = QLineEdit()
-        self.pages_le.setPlaceholderText("boş = tümü · örn. 120-145")
+        # kaynak listesi: birden çok kaynak işaretlenebilir; PDF'lerde her birine ayrı sayfa aralığı
+        self.src_tbl = QTableWidget(0, 3)
+        self.src_tbl.setHorizontalHeaderLabels(["Kaynak (birden çok seçebilirsin)", "Tür", "Sayfalar (boş = tümü)"])
+        self.src_tbl.verticalHeader().hide()
+        self.src_tbl.setShowGrid(False)
+        self.src_tbl.setSelectionMode(QAbstractItemView.NoSelection)
+        self.src_tbl.setEditTriggers(QAbstractItemView.AllEditTriggers)
+        hh = self.src_tbl.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.Stretch)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.Interactive)
+        self.src_tbl.setColumnWidth(2, 190)
+        self.src_tbl.setFixedHeight(132)
+        self.src_tbl.itemChanged.connect(self._doc_changed)
+        self.filter_le = QLineEdit()
+        self.filter_le.setPlaceholderText("Kaynaklarda ara…")
+        self.filter_le.setClearButtonEnabled(True)
+        self.filter_le.textChanged.connect(self._filter)
         self.topic_le = QLineEdit()
         self.topic_le.setPlaceholderText("ya da konu: örn. allerjik rinit tedavisi")
         self.tpl_cb = QComboBox()
@@ -108,17 +121,19 @@ class SummaryPage(QWidget):
         self.doc_info = QLabel("")
         self.doc_info.setObjectName("muted")
         self.doc_info.setWordWrap(True)
-        g.addWidget(lab("Kaynak"), 0, 0)
-        g.addWidget(lab("Sayfalar (PDF)"), 0, 1)
-        g.addWidget(lab("Konu (isteğe bağlı)"), 0, 2)
-        g.addWidget(self.doc_cb, 1, 0)
-        g.addWidget(self.pages_le, 1, 1)
-        g.addWidget(self.topic_le, 1, 2)
-        g.setColumnStretch(0, 2)
-        g.setColumnStretch(1, 1)
-        g.setColumnStretch(2, 2)
-        g.addWidget(self.doc_info, 2, 0, 1, 3)
-        g.addWidget(lab("Şablon"), 3, 0)
+        top = QHBoxLayout()
+        top.addWidget(lab("Kaynaklar"))
+        top.addStretch()
+        top.addWidget(self.filter_le)
+        g.addLayout(top, 0, 0, 1, 3)
+        g.addWidget(self.src_tbl, 1, 0, 1, 3)
+        trow0 = QHBoxLayout()
+        trow0.addWidget(lab("Konu (isteğe bağlı)"))
+        trow0.addWidget(self.topic_le, 1)
+        g.addLayout(trow0, 2, 0, 1, 3)
+        g.setColumnStretch(0, 1)
+        g.addWidget(self.doc_info, 3, 0, 1, 3)
+        g.addWidget(lab("Şablon"), 4, 0)
         trow = QHBoxLayout()
         trow.addWidget(self.tpl_cb, 1)
         self.edit_btn = QPushButton("Düzenle / kendi şablonum")
@@ -132,8 +147,8 @@ class SummaryPage(QWidget):
         self.stop_btn.hide()
         trow.addWidget(self.stop_btn)
         trow.addWidget(self.run_btn)
-        g.addLayout(trow, 4, 0, 1, 3)
-        g.addWidget(self.tpl_desc, 5, 0, 1, 3)
+        g.addLayout(trow, 5, 0, 1, 3)
+        g.addWidget(self.tpl_desc, 6, 0, 1, 3)
         root.addWidget(card)
 
         st = QHBoxLayout()
@@ -217,32 +232,81 @@ class SummaryPage(QWidget):
 
     # ------------------------------------------------------------------ seçimler
     def refresh_docs(self):
-        cur = self.doc_cb.currentData()
-        self.doc_cb.blockSignals(True)
-        self.doc_cb.clear()
-        for d in self.ctx.db.list_documents():
+        prev = {did: pages for did, pages in self.selected()} if self.src_tbl.rowCount() else {}
+        self.src_tbl.blockSignals(True)
+        self.src_tbl.setRowCount(0)
+        docs = self.ctx.db.list_documents()
+        for r, d in enumerate(docs):
+            self.src_tbl.insertRow(r)
             kind = {"pdf": "PDF", "docx": "Word", "web": "Web", "web-pdf": "Web PDF"}.get(d["kind"], d["kind"])
-            self.doc_cb.addItem(f"{d['title'][:60]}  ·  {kind}", d["id"])
-        if cur is not None and self.doc_cb.findData(cur) >= 0:
-            self.doc_cb.setCurrentIndex(self.doc_cb.findData(cur))
-        self.doc_cb.blockSignals(False)
+            it = QTableWidgetItem(d["title"][:90])
+            it.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            it.setCheckState(Qt.Checked if d["id"] in prev or (not prev and r == 0) else Qt.Unchecked)
+            it.setData(Qt.UserRole, d["id"])
+            it.setToolTip(d["title"])
+            self.src_tbl.setItem(r, 0, it)
+            k = QTableWidgetItem(kind)
+            k.setFlags(Qt.ItemIsEnabled)
+            self.src_tbl.setItem(r, 1, k)
+            paged = d["kind"] in ("pdf", "web-pdf")
+            pg = QTableWidgetItem(prev.get(d["id"], "") if paged else "—")
+            pg.setFlags(Qt.ItemIsEnabled | Qt.ItemIsEditable if paged else Qt.ItemIsEnabled)
+            pg.setToolTip("örn. 120-145 ya da 12-30, 45 · boş = tümü" if paged else "Metin kaynağında sayfa yok")
+            self.src_tbl.setItem(r, 2, pg)
+        self.src_tbl.blockSignals(False)
+        self._filter(self.filter_le.text())
+        self._doc_changed()
+
+    def _filter(self, text: str):
+        t = text.strip().lower()
+        for r in range(self.src_tbl.rowCount()):
+            it = self.src_tbl.item(r, 0)
+            self.src_tbl.setRowHidden(r, bool(t) and t not in it.text().lower() and it.checkState() != Qt.Checked)
+
+    def selected(self) -> list[tuple[int, str]]:
+        out = []
+        for r in range(self.src_tbl.rowCount()):
+            it = self.src_tbl.item(r, 0)
+            if it and it.checkState() == Qt.Checked:
+                pg = self.src_tbl.item(r, 2)
+                pages = pg.text().strip() if pg and pg.text() != "—" else ""
+                out.append((it.data(Qt.UserRole), pages))
+        return out
+
+    def select_docs(self, ids: list[int]):
+        self.src_tbl.blockSignals(True)
+        for r in range(self.src_tbl.rowCount()):
+            it = self.src_tbl.item(r, 0)
+            it.setCheckState(Qt.Checked if it.data(Qt.UserRole) in ids else Qt.Unchecked)
+        self.src_tbl.blockSignals(False)
         self._doc_changed()
 
     def _doc_changed(self, *_):
-        did = self.doc_cb.currentData()
-        if did is None:
+        if not self.src_tbl.rowCount():
             self.doc_info.setText("Kütüphane boş — önce Kütüphane sekmesinden kaynak ekle.")
             return
-        d = self.ctx.db.get_document(did)
-        if d and d["kind"] == "pdf" and Path(d["source"]).exists():
-            n = pdf_page_count(d["source"])
-            self.pages_le.setEnabled(True)
-            self.doc_info.setText(f"PDF · {n} sayfa · sayfalar yapay zekâya PDF olarak gönderilir (tablolar ve şekiller "
-                                  "okunur). Uzun aralıklar 25 sayfalık bölümlere ayrılır; büyük kitapta aralık ya da "
-                                  "konu seçmen önerilir.")
+        sel = self.selected()
+        if not sel:
+            self.doc_info.setText("Özetlenecek en az bir kaynağı işaretle.")
+            return
+        n_pdf = 0
+        for did, _p in sel:
+            d = self.ctx.db.get_document(did)
+            if d and d["kind"] == "pdf" and Path(d["source"]).exists():
+                n_pdf += 1
+        if len(sel) == 1:
+            did = sel[0][0]
+            d = self.ctx.db.get_document(did)
+            if n_pdf:
+                self.doc_info.setText(f"PDF · {pdf_page_count(d['source'])} sayfa · sayfalar yapay zekâya PDF olarak "
+                                      "gönderilir (tablolar ve şekiller okunur). Büyük kitapta sayfa aralığı ya da "
+                                      "konu yazman önerilir.")
+            else:
+                self.doc_info.setText("Metin kaynağı · kayıtlı metin gönderilir (Word tabloları dahil).")
         else:
-            self.pages_le.setEnabled(bool(d and d["kind"] in ("pdf", "web-pdf")))
-            self.doc_info.setText("Metin kaynağı · kayıtlı metin gönderilir (Word tabloları dahil).")
+            self.doc_info.setText(f"{len(sel)} kaynak seçili ({n_pdf} PDF). Sığarsa hepsi birlikte okunur ve TEK "
+                                  "bütünleşik özet çıkar (ortak noktalar birleştirilir, farklar belirtilir); "
+                                  "sığmazsa her kaynak kendi bölümünde özetlenir.")
 
     def _custom(self) -> list[dict]:
         return self.ctx.settings.extra.setdefault("summary_templates", [])
@@ -300,24 +364,26 @@ class SummaryPage(QWidget):
 
     # ------------------------------------------------------------------ çalıştır
     def run(self):
-        did = self.doc_cb.currentData()
-        if did is None:
-            QMessageBox.information(self, "Kaynak yok", "Önce Kütüphane sekmesinden bir kaynak ekle.")
+        items = self.selected()
+        if not items:
+            QMessageBox.information(self, "Kaynak yok", "Özetlenecek en az bir kaynağı işaretle (Kütüphane boşsa "
+                                                        "önce kaynak ekle).")
             return
+        did = items[0][0]
         if not self.ctx.settings.has_any_key:
             QMessageBox.warning(self, "API anahtarı gerekli", "Lütfen önce Ayarlar sekmesinden API anahtarınızı girin.")
             return
         key, name, prompt = self._template()
         want_tables = TEMPLATES[key].get("tables", False) if key in TEMPLATES else None
-        pages, topic = self.pages_le.text().strip(), self.topic_le.text().strip()
+        topic = self.topic_le.text().strip()
         engine = self.ctx.summary_engine
         try:
-            src = engine.build_source(did, pages if self.pages_le.isEnabled() else "", topic)
+            src = engine.build_multi(items, topic)
         except Exception as e:  # noqa: BLE001
             QMessageBox.warning(self, "Kaynak hazırlanamadı", str(e))
             return
         n = len(src.packets)
-        self.current = {"doc_id": did, "title": src.title, "scope": src.scope, "template": name, "markdown": "",
+        self.current = {"doc_id": did, "doc_ids": src.doc_ids, "title": src.title, "scope": src.scope, "template": name, "markdown": "",
                         "model": "", "notes": src.notes}
         self.buf = ""
         self._show(self.current, streaming=True)
@@ -325,7 +391,7 @@ class SummaryPage(QWidget):
         self.stop_btn.show()
         self.busy.show()
         self.status.setText(f"{src.title} · {src.scope} · {n} bölüm hâlinde işleniyor"
-                            f"{' (PDF sayfaları olarak)' if src.packets[0].pdf else ''}… Uzun kaynaklarda birkaç "
+                            f"{' (PDF sayfaları olarak)' if src.packets[0].pdf or any(m.pdf for m in src.packets[0].members) else ''}… Uzun kaynaklarda birkaç "
                             "dakika sürebilir; yazılanlar aşağıda canlı görünür.")
         self._flush.start()
         state = {"stop": False}
@@ -396,8 +462,10 @@ class SummaryPage(QWidget):
             self.view.setHtml(
                 f"<div style='color:{style.MUTED}; padding:30px'>"
                 "<h2>Nasıl kullanılır?</h2>"
-                "<ol><li>Yukarıdan <b>kaynağı</b> seç (Kütüphane'deki PDF, Word, metin, web).</li>"
-                "<li>Büyük bir kitapsa <b>sayfa aralığı</b> (örn. 120-145) ya da <b>konu</b> yaz; küçük kaynakta boş bırak.</li>"
+                "<ol><li>Yukarıdaki listeden <b>kaynakları işaretle</b> — bir ya da birden çok (PDF, Word, metin, web). "
+                "Birden çok kaynak birlikte okunur ve tek bütünleşik özet çıkar.</li>"
+                "<li>Büyük bir kitapsa satırındaki <b>Sayfalar</b> hücresine aralık (örn. 120-145) ya da aşağıya <b>konu</b> "
+                "yaz; küçük kaynakta boş bırak.</li>"
                 "<li><b>Şablon</b> seç: Detaylı özet, + 10 tekrar sorusu, pediatrik vaka seti, tam analiz, İngilizce "
                 "cloze testi, akademik kelimeler… ya da “Düzenle / kendi şablonum” ile kendi komutunu ekle.</li>"
                 "<li><b>Özeti oluştur</b>. Tablolar gerçek tablo olarak gelir; sonuç otomatik kaydedilir, PDF olarak "
@@ -479,7 +547,7 @@ class SummaryPage(QWidget):
 
     def _quiz(self):
         if self.current and self.current.get("doc_id"):
-            self.quiz_requested.emit(self.current["doc_id"], "")
+            self.quiz_requested.emit(list(self.current.get("doc_ids") or [self.current["doc_id"]]), "")
 
     def add_vocab(self):
         rows = vocab_rows(self.current.get("markdown", "") if self.current else "")

@@ -4,8 +4,9 @@ from __future__ import annotations
 import datetime as dt
 import json
 
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QAbstractItemView, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QTableWidget,
+    QAbstractItemView, QFrame, QPushButton, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -42,6 +43,9 @@ def _table(headers: list[str]) -> QTableWidget:
 
 
 class StatsPage(QWidget):
+    review_requested = Signal(str, str)     # kapsam ("all" | "topic"), konu
+    quiz_requested = Signal(str)            # konu: yanlış yoksa o konudan yeni quiz
+
     def __init__(self, ctx: AppContext):
         super().__init__()
         self.setObjectName("page")
@@ -70,13 +74,39 @@ class StatsPage(QWidget):
             tiles.addWidget(f, 0, i)
         root.addLayout(tiles)
 
+        # --- tekrar bekleyen yanlışlar
+        rv = QFrame()
+        rv.setObjectName("card")
+        rl = QHBoxLayout(rv)
+        rl.setContentsMargins(18, 12, 18, 12)
+        self.rv_lbl = QLabel("")
+        self.rv_lbl.setWordWrap(True)
+        rl.addWidget(self.rv_lbl, 1)
+        self.rv_topic_btn = QPushButton("Seçili konuyu tekrar et")
+        self.rv_topic_btn.setToolTip("Soldaki tablodan bir konu seç: yalnızca o konudaki yanlışlarından yeni sorular")
+        self.rv_topic_btn.clicked.connect(self._review_selected)
+        self.rv_all_btn = QPushButton("🔁 Tüm yanlışları tekrar et")
+        self.rv_all_btn.setObjectName("primary")
+        self.rv_all_btn.clicked.connect(lambda: self.review_requested.emit("all", ""))
+        rl.addWidget(self.rv_topic_btn)
+        rl.addWidget(self.rv_all_btn)
+        root.addWidget(rv)
+
         mid = QHBoxLayout()
         left = QVBoxLayout()
         l1 = QLabel("Konulara göre (en zayıftan güçlüye)")
         l1.setObjectName("h2")
         left.addWidget(l1)
-        self.t_topic = _table(["Konu", "Soru", "Başarı"])
+        self.t_topic = _table(["Konu", "Soru", "Başarı", "Bekleyen yanlış"])
+        self.t_topic.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.t_topic.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.t_topic.cellDoubleClicked.connect(lambda r, _c: self._review_row(r))
+        self.t_topic.itemSelectionChanged.connect(self._sel_changed)
         left.addWidget(self.t_topic)
+        tip = QLabel("İpucu: bir konuya çift tıkla — yanlışın varsa onları, yoksa o konudan yeni bir quiz başlatır.")
+        tip.setObjectName("muted")
+        tip.setWordWrap(True)
+        left.addWidget(tip)
         right = QVBoxLayout()
         l2 = QLabel("Son cevaplar")
         l2.setObjectName("h2")
@@ -88,6 +118,36 @@ class StatsPage(QWidget):
         mid.addLayout(right, 3)
         root.addLayout(mid, 1)
         ctx.profile_changed.connect(lambda _: self.refresh())
+
+    def _sel_topic(self) -> str | None:
+        rows = self.t_topic.selectionModel().selectedRows() if self.t_topic.selectionModel() else []
+        if not rows:
+            return None
+        it = self.t_topic.item(rows[0].row(), 0)
+        return it.data(Qt.UserRole) if it else None
+
+    def _sel_changed(self):
+        t = self._sel_topic()
+        w = getattr(self, "_wrong", {}).get(t, 0) if t else 0
+        self.rv_topic_btn.setEnabled(bool(t))
+        self.rv_topic_btn.setText(f"“{t[:24]}” yanlışlarını tekrar et ({w})" if t and w else
+                                  f"“{t[:24]}” konusundan quiz" if t else "Seçili konuyu tekrar et")
+
+    def _review_row(self, r: int):
+        it = self.t_topic.item(r, 0)
+        if it:
+            self._go_topic(it.data(Qt.UserRole))
+
+    def _review_selected(self):
+        t = self._sel_topic()
+        if t:
+            self._go_topic(t)
+
+    def _go_topic(self, t: str):
+        if getattr(self, "_wrong", {}).get(t):
+            self.review_requested.emit("topic", t)
+        else:
+            self.quiz_requested.emit("" if t == "Genel" else t)
 
     def showEvent(self, e):
         self.refresh()
@@ -104,13 +164,35 @@ class StatsPage(QWidget):
         for k, lbl in (("fill", self.v_fill), ("match", self.v_match)):
             lbl.setText(f"%{by[k][2] * 100:.0f}  ({by[k][1]})" if k in by else "—")
 
-        self.t_topic.setRowCount(len(s["by_topic"]))
-        for r, (topic, n, avg) in enumerate(s["by_topic"]):
-            self.t_topic.setItem(r, 0, QTableWidgetItem(topic))
+        wrong = dict(self.ctx.db.wrong_topics(prof))
+        n_wrong = sum(wrong.values())
+        self.rv_lbl.setText(
+            f"<b>Tekrar bekleyen yanlış: {n_wrong}</b>" + (f" · {len(wrong)} konuda" if wrong else "") +
+            ("<br><span style='color:#64748b'>Yanlışlarından, aynı soruları değil aynı kavramları farklı açılardan "
+             "soran yeni sorular (5 test + 5 eşleştirme) hazırlanır.</span>" if n_wrong else
+             "<br><span style='color:#64748b'>Bekleyen yanlış yok. 👏</span>"))
+        self.rv_all_btn.setEnabled(n_wrong > 0)
+        self.rv_all_btn.setText(f"🔁 Tüm yanlışları tekrar et ({n_wrong})" if n_wrong else "🔁 Tüm yanlışları tekrar et")
+        topics = list(s["by_topic"])
+        seen = {t[0] or "Genel" for t in topics}
+        topics += [(t, 0, 0.0) for t in wrong if t not in seen]
+        self.t_topic.setRowCount(len(topics))
+        for r, (topic, n, avg) in enumerate(topics):
+            name = topic or "Genel"
+            it0 = QTableWidgetItem(name)
+            it0.setData(Qt.UserRole, name)
+            self.t_topic.setItem(r, 0, it0)
             self.t_topic.setItem(r, 1, QTableWidgetItem(str(n)))
             it = QTableWidgetItem(f"%{avg * 100:.0f}")
             it.setForeground(self._color(avg))
             self.t_topic.setItem(r, 2, it)
+            w = wrong.get(name, 0)
+            itw = QTableWidgetItem(str(w) if w else "—")
+            if w:
+                itw.setForeground(self._color(0.0))
+            self.t_topic.setItem(r, 3, itw)
+        self._wrong = wrong
+        self._sel_changed()
 
         self.t_recent.setRowCount(len(s["recent"]))
         for r, row in enumerate(s["recent"]):

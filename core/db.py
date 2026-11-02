@@ -334,18 +334,40 @@ BEGIN INSERT OR REPLACE INTO tombstones(uid, tbl, at) VALUES (OLD.uid, '{t}', {n
             "recent": [dict(r) for r in recent],
         }
 
-    def wrong_questions(self, limit: int = 20, profile: str | None = None) -> list[dict]:
-        """Yanlış/düşük puanlı sorular — tekrar modu için."""
+    def wrong_questions(self, limit: int = 20, profile: str | None = None, ids: list[int] | None = None,
+                        topic: str | None = None) -> list[dict]:
+        """Yanlış/düşük puanlı, henüz tekrar edilmemiş sorular — tekrar modu için.
+        ids: yalnızca bu sorular (ör. az önce bitirilen quiz); topic: yalnızca bu konu."""
         with self._lock:
             sql = ("SELECT id, qtype, topic, difficulty, payload, chunk_ids FROM questions "
+                   "WHERE score IS NOT NULL AND score < 0.6 AND reviewed_at IS NULL")
+            params: list = []
+            if profile:
+                sql += " AND profile = ?"
+                params.append(profile)
+            if ids is not None:
+                if not ids:
+                    return []
+                sql += f" AND id IN ({','.join('?' * len(ids))})"
+                params += list(ids)
+            if topic:
+                sql += " AND topic = ?"
+                params.append(topic)
+            sql += " ORDER BY answered_at DESC LIMIT ?"
+            rows = self.conn.execute(sql, params + [limit]).fetchall()
+        return [dict(r) for r in rows]
+
+    def wrong_topics(self, profile: str | None = None) -> list[tuple[str, int]]:
+        """Tekrar bekleyen yanlışların konulara göre sayısı (çoktan aza)."""
+        with self._lock:
+            sql = ("SELECT COALESCE(NULLIF(topic, ''), 'Genel'), COUNT(*) FROM questions "
                    "WHERE score IS NOT NULL AND score < 0.6 AND reviewed_at IS NULL")
             params: tuple = ()
             if profile:
                 sql += " AND profile = ?"
                 params = (profile,)
-            sql += " ORDER BY answered_at DESC LIMIT ?"
-            rows = self.conn.execute(sql, params + (limit,)).fetchall()
-        return [dict(r) for r in rows]
+            sql += " GROUP BY 1 ORDER BY 2 DESC"
+            return [(r[0], r[1]) for r in self.conn.execute(sql, params).fetchall()]
 
     def mark_reviewed(self, ids: list[int]) -> None:
         if not ids:

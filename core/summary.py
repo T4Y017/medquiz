@@ -143,6 +143,8 @@ class Packet:
     text: str = ""
     pages: list[int] = field(default_factory=list)
     captions: list[tuple[str, str]] = field(default_factory=list)   # kaynakta görülen tablo başlıkları
+    title: str = ""                  # hangi kaynaktan (çok kaynaklı özette)
+    members: list["Packet"] = field(default_factory=list)   # birden çok kaynak tek istekte birlikte
 
 
 @dataclass
@@ -152,6 +154,7 @@ class Source:
     scope: str
     packets: list[Packet]
     notes: list[str] = field(default_factory=list)
+    doc_ids: list[int] = field(default_factory=list)
 
 
 def _page_of(loc: str) -> int | None:
@@ -306,7 +309,43 @@ class SummaryEngine:
         scope = _ranges(pages) if pages and (is_pdf or any(_page_of(c["location"]) for c in chunks)) else "tümü"
         if topic.strip() and not pages_spec.strip():
             scope = f"“{topic}” ile ilgili {scope}"
-        return Source(doc_id, doc["title"], scope, packets, notes)
+        for pk in packets:
+            pk.title = doc["title"]
+        return Source(doc_id, doc["title"], scope, packets, notes, [doc_id])
+
+    def build_multi(self, items: list[tuple[int, str]], topic: str = "") -> Source:
+        """Birden çok kaynak: [(belge, sayfa aralığı)]. Hepsi bir isteğe sığıyorsa BİRLİKTE gönderilir (kaynaklar
+        arası bütünleşik özet); sığmıyorsa her kaynak kendi bölüm(ler)inde işlenir."""
+        if not items:
+            raise LLMError("En az bir kaynak seç.")
+        if len(items) == 1:
+            return self.build_source(items[0][0], items[0][1], topic)
+        srcs = []
+        for did, pages in items:
+            try:
+                srcs.append(self.build_source(did, pages, topic))
+            except LLMError as e:
+                if topic.strip() and "bulunamadı" in str(e):
+                    continue                  # bu kaynakta konu yok: diğerleriyle devam
+                raise
+        if not srcs:
+            raise LLMError(f"Seçilen kaynaklarda '{topic}' ile ilgili bölüm bulunamadı.")
+        notes = [f"{s.title}: {n}" for s in srcs for n in s.notes]
+        title = " + ".join(s.title for s in srcs) if len(srcs) <= 3 else f"{srcs[0].title} + {len(srcs) - 1} kaynak"
+        scope = "; ".join(f"{s.title[:30]}: {s.scope}" for s in srcs)
+        pks = [pk for s in srcs for pk in s.packets]
+        pdf_bytes = sum(len(pk.pdf or b"") for pk in pks)
+        n_pages = sum(len(pk.pages) for pk in pks if pk.pdf)
+        text_chars = sum(len(pk.text) for pk in pks)
+        if (all(len(s.packets) == 1 for s in srcs) and pdf_bytes <= MAX_PDF_BYTES and n_pages <= 2 * PAGES_PER_PART
+                and text_chars <= MAX_TEXT_CHARS):
+            label = ", ".join(f"{pk.title[:25]} {pk.label}" for pk in pks)
+            merged = Packet(label, members=pks, captions=[c for pk in pks for c in pk.captions])
+            packets = [merged]
+        else:
+            packets = pks
+            notes.append("Kaynaklar birlikte tek isteğe sığmadı; her kaynak kendi bölümünde özetlendi.")
+        return Source(srcs[0].doc_id, title, scope, packets, notes, [s.doc_id for s in srcs])
 
     @staticmethod
     def _text_for(chunks: list[dict], pages: list[int]) -> str:
@@ -332,10 +371,15 @@ class SummaryEngine:
             if should_stop and should_stop():
                 return
             if multi:
-                yield f"\n\n# Bölüm {i}/{len(src.packets)} — {pk.label}\n\n"
+                where = f"{pk.title} · {pk.label}" if len(src.doc_ids) > 1 and pk.title else pk.label
+                yield f"\n\n# Bölüm {i}/{len(src.packets)} — {where}\n\n"
             head = (f"KAYNAK: {src.title} ({pk.label})\n"
                     + (f"(Bu, uzun bir kaynağın {i}/{len(src.packets)}. bölümüdür; yalnızca bu bölümü işle.)\n"
                        if multi else ""))
+            if pk.members:
+                head += (f"Bu istekte {len(pk.members)} ayrı kaynak var. Hepsini birlikte değerlendir: ortak konuları "
+                         "TEK bir bütünleşik özette birleştir, kaynaklar arasındaki farkları ve çelişkileri belirt; "
+                         "her bilginin hangi kaynaktan geldiğini (Kaynak 1, Kaynak 2…) kısaca göster.\n")
             if pk.captions:
                 head += ("Bu bölümde şu tablolar var; HER BİRİNİ Markdown tablo olarak ver: "
                          + "; ".join(c for _, c in pk.captions) + "\n")
@@ -382,6 +426,16 @@ class SummaryEngine:
                     yield "\n\n## Özet tabloları\n\n" + md + "\n"
 
     def _parts(self, src: Source, pk: Packet, text: str) -> list[dict]:
+        if pk.members:
+            parts: list[dict] = []
+            for k, m in enumerate(pk.members, 1):
+                parts.append({"type": "text", "text": f"=== Kaynak {k}: {m.title} ({m.label}) ==="})
+                if m.pdf:
+                    parts.append({"type": "pdf", "data": m.pdf, "name": f"kaynak{k}.pdf"})
+                else:
+                    parts.append({"type": "text", "text": m.text})
+            parts.append({"type": "text", "text": text})
+            return parts
         if pk.pdf:
             return [{"type": "pdf", "data": pk.pdf, "name": f"{src.title[:40]}.pdf"}, {"type": "text", "text": text}]
         return [{"type": "text", "text": "KAYNAK METİN:\n" + pk.text + "\n\n=====\n" + text}]

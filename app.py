@@ -140,6 +140,8 @@ class MainWindow(QMainWindow):
 
         self.chat.quiz_btn.clicked.connect(self._quiz_from_chat)
         self.summary.quiz_requested.connect(self._quiz_from_doc)
+        self.stats.review_requested.connect(self._review_from_stats)
+        self.stats.quiz_requested.connect(self._quiz_from_topic)
         self.collapsed = False
         self.set_collapsed(bool(ctx.settings.extra.get("sidebar_collapsed")), save=False)
         ctx.settings_changed.connect(self._apply_style)
@@ -191,8 +193,17 @@ class MainWindow(QMainWindow):
             self.ctx.settings.extra["sidebar_collapsed"] = on
             self.ctx.settings.save()
 
-    def _quiz_from_doc(self, doc_id: int, topic: str):
-        self.quiz.select_doc(doc_id)
+    def _review_from_stats(self, scope: str, topic: str):
+        self.go("Quiz")
+        self.quiz.start_review(scope=scope, topic=topic or None)
+
+    def _quiz_from_topic(self, topic: str):
+        self.quiz.topic_le.setText(topic)
+        self.go("Quiz")
+        self.quiz.start()
+
+    def _quiz_from_doc(self, doc_ids: list, topic: str):
+        self.quiz.select_doc(doc_ids)
         if topic:
             self.quiz.topic_le.setText(topic)
         self.go("Quiz")

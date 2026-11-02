@@ -405,10 +405,13 @@ class QuizEngine:
     # --------------------------------------------------------------- review
     def generate_review(self, profile: str = "", n_mcq: int = 5, n_match: int = 5, difficulty: str = "Orta",
                         language: str = "tr", on_batch: Callable[[list[dict]], None] | None = None,
-                        limit: int = 20) -> dict:
+                        limit: int = 20, question_ids: list[int] | None = None, topic: str | None = None) -> dict:
         """Yanlış yapılan sorulardan konu ve kaynakları çıkarır; aynı soruları değil, aynı kavramları farklı
         açılardan soran YENİ sorular üretir (varsayılan 5 çoktan seçmeli + 5 eşleştirme)."""
-        rows = self.db.wrong_questions(limit=limit, profile=profile or None)
+        rows = self.db.wrong_questions(limit=limit, profile=profile or None, ids=question_ids,
+                                       topic=None if topic in (None, "Genel") else topic)
+        if topic == "Genel":
+            rows = [r for r in rows if not (r.get("topic") or "").strip()]
         if not rows:
             return {"questions": [], "topics": [], "reviewed": 0}
         wrong, chunk_ids, topics = [], [], []
@@ -455,6 +458,7 @@ class QuizEngine:
                 "ÖĞRENCİNİN YANLIŞ YAPTIĞI SORULAR (bunları TEKRAR SORMA; aynı kavramlardaki eksiği kapatacak, "
                 "kavramı farklı açılardan yoklayan YENİ sorular yaz):\n" + "\n".join(mistakes) + "\n\n"
                 f"Zayıf konular: {', '.join(topics[:10]) or '(belirtilmemiş)'}\n"
+                "YALNIZCA bu yanlışların kapsadığı konu ve kavramlardan soru yaz; başka konuya geçme.\n"
                 f"Zorluk: {difficulty} — {DIFFICULTIES.get(difficulty, '')}\n"
                 f"Toplam: {' ve '.join(parts)}.\n{self._stem_hint(5)}\n"
                 f"{LANG_RULE.get(language, '')}\n\n{JSON_SPEC}\n{MATCH_SPEC}"

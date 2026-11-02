@@ -147,8 +147,9 @@ class QuizPage(QWidget):
         self.start_btn.clicked.connect(self.start)
         self.review_btn = QPushButton("Yanlışlarımı tekrar et")
         self.review_btn.setToolTip("Yanlış yaptığın soruların konularından YENİ sorular üretir:\n"
-                                   "5 çoktan seçmeli + 5 eşleştirme. Aynı sorular tekrar sorulmaz.")
-        self.review_btn.clicked.connect(self.start_review)
+                                   "5 çoktan seçmeli + 5 eşleştirme. Aynı sorular tekrar sorulmaz.\n"
+                                   "Bir quiz bitirdiysen yalnızca o quizdeki yanlışlar ele alınır.")
+        self.review_btn.clicked.connect(lambda: self.start_review(scope="auto"))
 
         def lab(s):
             l = QLabel(s)
@@ -501,9 +502,9 @@ class QuizPage(QWidget):
         for k, sp in self.count_sps.items():
             sp.setValue(int(c.get(k, 0)))
 
-    def select_doc(self, doc_id: int):
-        """Özet sayfasından gelince yalnızca o kaynaktan soru üret."""
-        self.selected_docs = {doc_id}
+    def select_doc(self, doc_ids):
+        """Özet sayfasından gelince yalnızca o kaynak(lar)dan soru üret."""
+        self.selected_docs = set(doc_ids if isinstance(doc_ids, (list, set, tuple)) else [doc_ids])
         self._update_docs_btn()
 
     def _build_request(self) -> GenRequest:
@@ -593,9 +594,36 @@ class QuizPage(QWidget):
         self._set_busy(False, "" if silent else "Durduruldu.")
         self._render_nav()
 
-    def start_review(self):
-        """Yanlış yapılan konulardan YENİ sorular: 5 çoktan seçmeli + 5 eşleştirme."""
-        rows = self.ctx.db.wrong_questions(limit=20, profile=self.ctx.profile or None)
+    def session_wrong_ids(self) -> list[int]:
+        """Bu ekrandaki (az önce çözülen) quizde yanlış yapılan soruların kimlikleri."""
+        return [q["id"] for i, q in enumerate(self.questions)
+                if q.get("id") and i in self.results and self.results[i].get("score") is not None
+                and self.results[i]["score"] < 0.6]
+
+    def update_review_btn(self):
+        n_sess = len(self.session_wrong_ids())
+        if n_sess:
+            self.review_btn.setText(f"Bu quizin yanlışlarını tekrar et ({n_sess})")
+        else:
+            n_all = len(self.ctx.db.wrong_questions(limit=500, profile=self.ctx.profile or None))
+            self.review_btn.setText(f"Yanlışlarımı tekrar et ({n_all})" if n_all else "Yanlışlarımı tekrar et")
+
+    def start_review(self, scope: str = "auto", topic: str | None = None):
+        """Yanlış yapılan konulardan YENİ sorular: 5 çoktan seçmeli + 5 eşleştirme.
+        scope: "session" = yalnızca bu quizin yanlışları, "all" = tüm bekleyen yanlışlar,
+        "topic" = yalnızca verilen konunun yanlışları, "auto" = bu quizde yanlış varsa o, yoksa tümü."""
+        ids = None
+        if scope in ("auto", "session"):
+            sess = self.session_wrong_ids()
+            if sess:
+                ids, scope = sess, "session"
+            elif scope == "session":
+                QMessageBox.information(self, "Harika!", "Bu quizde yanlış yok.")
+                return
+            else:
+                scope = "all"
+        rows = self.ctx.db.wrong_questions(limit=20, profile=self.ctx.profile or None, ids=ids,
+                                           topic=topic if scope == "topic" and topic != "Genel" else None)
         if not rows:
             QMessageBox.information(self, "Harika!", "Tekrar edilecek yanlış/düşük puanlı soru yok.")
             return
@@ -613,7 +641,8 @@ class QuizPage(QWidget):
         diff, lang = self.diff_cb.currentText(), self.lang_cb.currentData()
 
         def job(progress, task):
-            return engine.generate_review(profile=profile, n_mcq=5, n_match=5, difficulty=diff, language=lang)
+            return engine.generate_review(profile=profile, n_mcq=5, n_match=5, difficulty=diff, language=lang,
+                                          question_ids=ids, topic=topic if scope == "topic" else None)
 
         def done(res, t=token):
             if t != self.gen_token:
@@ -634,8 +663,9 @@ class QuizPage(QWidget):
             self._render()
             QMessageBox.warning(self, "Tekrar quizi hazırlanamadı", e)
 
-        self._set_busy(True, f"Yanlış yaptığın {len(rows)} sorunun konularından 5 test + 5 eşleştirme sorusu "
-                             "hazırlanıyor…")
+        where = {"session": "bu quizde", "topic": f"“{topic}” konusunda", "all": "şimdiye kadar"}[scope]
+        self._set_busy(True, f"{where.capitalize()} yanlış yaptığın {len(rows)} sorunun konularından "
+                             "5 test + 5 eşleştirme sorusu hazırlanıyor…")
         self.task = self.ctx.runner.start(job, on_result=done, on_error=fail)
 
     # ======================================================= answering
@@ -793,6 +823,7 @@ class QuizPage(QWidget):
         else:
             self.next_btn.setEnabled(True)
             self.next_btn.setText("Sonraki →")
+        self.update_review_btn()
         self.score_lbl.setText(f"Cevaplanan: {n}   ·   Doğru: {correct}   ·   Ortalama: %{avg * 100:.0f}" if n else "")
         if has_q:
             extra = " (üretiliyor…)" if self.task else ""
@@ -1102,10 +1133,12 @@ class QuizPage(QWidget):
         box.setWindowTitle("Quiz sonucu")
         box.setText(msg)
         again = box.addButton("Yeni quiz", QMessageBox.AcceptRole)
-        review = box.addButton("Yanlışları tekrar et", QMessageBox.ActionRole)
+        n_wrong = len(self.session_wrong_ids())
+        review = box.addButton(f"Bu quizin yanlışlarını tekrar et ({n_wrong})", QMessageBox.ActionRole)
+        review.setEnabled(n_wrong > 0)
         box.addButton("Kapat", QMessageBox.RejectRole)
         box.exec()
         if box.clickedButton() is again:
             self.start()
         elif box.clickedButton() is review:
-            self.start_review()
+            self.start_review(scope="session")
