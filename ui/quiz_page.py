@@ -116,14 +116,16 @@ class QuizPage(QWidget):
         cw.setContentsMargins(0, 0, 0, 0)
         cw.setSpacing(6)
         tips = {"mcq": "Çoktan seçmeli (5 şık)", "fill": "Boşluk doldurma: cümledeki eksik kelimeyi yaz",
-                "match": "Eşleştirme: sol sütunu sağ sütunla eşle"}
+                "match": "Eşleştirme: sol sütunu sağ sütunla eşle",
+                "image": "Şekilli: kitaptaki görüntü (röntgen, EKG, histoloji, klinik fotoğraf…) gösterilir,\n"
+                         "soru o görüntüyü yorumlamayı ister. Yalnızca PDF kaynaklarda çalışır."}
         for k, name in QUIZ_TYPES.items():
             sp = QSpinBox()
             sp.setRange(0, 50)
             sp.setValue(int(saved.get(k, 0)))
             sp.setPrefix(f"{name}: ")
             sp.setToolTip(tips[k] + "\n0 = bu türden soru yok")
-            sp.setMinimumWidth(130 if k != "fill" else 175)
+            sp.setMinimumWidth({"fill": 175, "image": 120}.get(k, 130))
             sp.valueChanged.connect(self._update_total)
             self.count_sps[k] = sp
             cw.addWidget(sp)
@@ -189,6 +191,7 @@ class QuizPage(QWidget):
         self.busy.hide()
         self.status = QLabel("")
         self.status.setObjectName("muted")
+        self.status.setWordWrap(True)
         self.stop_btn = QPushButton("Durdur")
         self.stop_btn.clicked.connect(self.stop_generation)
         self.stop_btn.hide()
@@ -239,6 +242,20 @@ class QuizPage(QWidget):
         f.setPointSize(f.pointSize() + 2)
         self.q_lbl.setFont(f)
         cl.addWidget(self.q_lbl)
+
+        self.img_lbl = QLabel()
+        self.img_lbl.setAlignment(Qt.AlignCenter)
+        self.img_lbl.setCursor(Qt.PointingHandCursor)
+        self.img_lbl.setToolTip("Büyütmek için tıkla")
+        self.img_lbl.setStyleSheet("background:#0f172a; border-radius:10px; padding:6px;")
+        self.img_lbl.mousePressEvent = lambda e: self._zoom_image()
+        self.img_lbl.hide()
+        cl.addWidget(self.img_lbl)
+        self.img_src = QLabel()
+        self.img_src.setObjectName("muted")
+        self.img_src.setAlignment(Qt.AlignCenter)
+        self.img_src.hide()
+        cl.addWidget(self.img_src)
 
         self.opts_box = QWidget()
         ol = QVBoxLayout(self.opts_box)
@@ -574,7 +591,9 @@ class QuizPage(QWidget):
         if token != self.gen_token:
             return
         self.task = None
-        self._set_busy(False, f"{len(self.questions)} soru hazır.{self._fb_note}" if self.questions else "")
+        note = getattr(self.ctx.engine, "last_note", "")
+        self._set_busy(False, (f"{len(self.questions)} soru hazır.{self._fb_note}" if self.questions else "")
+                       + (f"  ⚠ {note}" if note else ""))
         self._render_nav()
 
     def _on_gen_error(self, err: str, token: int):
@@ -841,6 +860,8 @@ class QuizPage(QWidget):
         self.open_box.hide()
         self.match_box.hide()
         self.fill_box.hide()
+        self.img_lbl.hide()
+        self.img_src.hide()
         if q is None:
             self._show_widgets(False)
             if self.task:
@@ -857,7 +878,8 @@ class QuizPage(QWidget):
             return
 
         self._show_widgets(True)
-        self.badge_type.setText(TYPE_LABELS.get(q["type"], "Klasik"))
+        self.badge_type.setText(TYPE_LABELS["image"] if q.get("image") else TYPE_LABELS.get(q["type"], "Klasik"))
+        self._show_image(q)
         self.badge_topic.setText(q.get("topic") or "Genel")
         self.badge_topic.setVisible(bool(q.get("topic")))
         diff = self.req.difficulty if self.req else ("Tekrar" if self.review_mode else "")
@@ -965,6 +987,48 @@ class QuizPage(QWidget):
             self.fb_lbl.setText(head + body + self._src_line(q))
             self._set_sources(q)
             self.fb.show()
+
+    def _pixmap(self, q: dict):
+        import base64
+        from PySide6.QtGui import QPixmap
+        pm = QPixmap()
+        pm.loadFromData(base64.b64decode(q["image"]))
+        return pm
+
+    def _show_image(self, q: dict):
+        if not q.get("image"):
+            return
+        pm = self._pixmap(q)
+        if pm.isNull():
+            return
+        maxw = max(320, min(820, self.scroll.viewport().width() - 90))
+        maxh = 460
+        self.img_lbl.setPixmap(pm.scaled(maxw, maxh, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self.img_lbl.show()
+        answered = self.idx in self.results
+        # şekil başlığı cevabı verebilir: yalnızca cevaplandıktan sonra göster
+        self.img_src.setText(("🖼 " + q.get("figure", "")) if answered else "🖼 Kaynaktaki şekil · büyütmek için tıkla")
+        self.img_src.show()
+
+    def _zoom_image(self):
+        q = self.current()
+        if not q or not q.get("image"):
+            return
+        pm = self._pixmap(q)
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Şekil")
+        lay = QVBoxLayout(dlg)
+        sc = QScrollArea()
+        lbl = QLabel()
+        scr = self.screen().availableGeometry()
+        lbl.setPixmap(pm.scaled(int(scr.width() * 0.85), int(scr.height() * 0.8), Qt.KeepAspectRatio,
+                                Qt.SmoothTransformation) if pm.width() > scr.width() * 0.85 else pm)
+        lbl.setAlignment(Qt.AlignCenter)
+        sc.setWidget(lbl)
+        sc.setWidgetResizable(True)
+        lay.addWidget(sc)
+        dlg.resize(min(int(scr.width() * 0.9), pm.width() + 60), min(int(scr.height() * 0.9), pm.height() + 60))
+        dlg.exec()
 
     @staticmethod
     def _fill_text(q: dict) -> str:

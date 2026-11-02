@@ -256,6 +256,15 @@ def run(pdf: str | None, out: str) -> int:
                     "stems": [q["question"][-70:] for q in qs if q["type"] == "mcq"],
                     "fill": f["question"][:120], "fill_answers": [b["answer"] for b in f["blanks"]]}
 
+        def figure_quiz(qe=qe):
+            qs = qe.generate(GenRequest(counts={"image": 2}, difficulty="Orta"))
+            imgs = [q for q in qs if q.get("image")]
+            if not imgs:
+                raise RuntimeError(f"Şekilli soru çıkmadı: {getattr(qe, 'last_note', '')}")
+            return {"image_questions": len(imgs), "figures": [q.get("figure") for q in imgs],
+                    "stems": [q["question"][:140] for q in imgs],
+                    "answers": [q["options"][q["answer_index"]][:60] for q in imgs], "note": qe.last_note}
+
         def summary():
             from .summary import TEMPLATES, SummaryEngine
             se = SummaryEngine(db, retr2, factory)
@@ -368,6 +377,7 @@ def run(pdf: str | None, out: str) -> int:
         # Gerçek kullanım gibi adımlar arasında kısa ara (ücretsiz katmanın dakikalık sınırı)
         steps = [(f"{prov}: Ayarlar > Test düğmesi", settings_test), (f"{prov}: quiz üretimi (test + boşluk + eşleştirme)", quiz),
                  (f"{prov}: PDF sayfalarından özet (tablolu)", summary),
+                 (f"{prov}: şekilli sorular (kitaptaki görüntülerden)", figure_quiz),
                          (f"{prov}: İngilizce soru + çeviri + kelime tanımı", english_and_translate),
                          (f"{prov}: tekrar quizi (5 test + 5 eşleştirme) + kısa cevap puanı", review_and_short_answer), (f"{prov}: klasik cevap puanlama", grade),
                          (f"{prov}: vaka üretimi (paraklinik + test)", case),

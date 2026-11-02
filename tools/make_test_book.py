@@ -92,7 +92,68 @@ table_page(["Ketoasidozun şiddeti laboratuvar değerlerine göre sınıflandır
            [["Arteriyel pH", "7,25-7,30", "7,00-7,24", "< 7,00"], ["HCO3 (mEq/L)", "15-18", "10-14", "< 10"],
             ["Anyon açığı", "> 10", "> 12", "> 12"], ["Bilinç", "Uyanık", "Uyanık/uykulu", "Stupor/koma"]],
            [120, 110, 110, 110])
-for p in range(n - 17):
+def figure_page(intro, caption, img, size, logo=False):
+    """Gömülü resimli sayfa (şekilli soru testi): resim + altında şekil başlığı."""
+    from reportlab.lib.utils import ImageReader
+    c.setFont(font, 10)
+    y = 800
+    for ln in intro:
+        c.drawString(40, y, ln)
+        y -= 14
+    w, h = size
+    c.drawImage(ImageReader(img), 60, y - 20 - h, width=w, height=h)
+    c.drawString(60, y - 36 - h, caption)
+    if logo:
+        c.drawImage(ImageReader(img), 520, 790, width=30, height=30)   # küçük süs: atlanmalı
+    c.showPage()
+
+
+def _ecg():
+    from PIL import Image, ImageDraw
+    import math
+    im = Image.new("RGB", (1200, 400), (255, 240, 240))
+    d = ImageDraw.Draw(im)
+    for x in range(0, 1200, 20):
+        d.line([(x, 0), (x, 400)], fill=(250, 200, 200), width=1)
+    for y in range(0, 400, 20):
+        d.line([(0, y), (1200, y)], fill=(250, 200, 200), width=1)
+    pts = []
+    for x in range(1200):
+        ph = x % 240
+        v = 0
+        if 40 < ph < 60:
+            v = 15 * math.sin((ph - 40) / 20 * math.pi)            # P
+        elif 80 < ph < 88:
+            v = -10
+        elif 88 <= ph < 96:
+            v = 120                                                  # R
+        elif 96 <= ph < 104:
+            v = -25
+        elif 104 <= ph < 160:
+            v = 45 + 10 * math.sin((ph - 104) / 56 * math.pi)       # belirgin ST yükselmesi
+        pts.append((x, 220 - v))
+    d.line(pts, fill=(0, 0, 0), width=3)
+    return im
+
+
+def _xray():
+    from PIL import Image, ImageDraw, ImageFilter
+    im = Image.new("L", (700, 800), 20)
+    d = ImageDraw.Draw(im)
+    d.ellipse([90, 120, 330, 700], fill=70)      # sağ akciğer
+    d.ellipse([370, 120, 610, 700], fill=70)     # sol akciğer
+    d.ellipse([400, 380, 600, 690], fill=200)    # sol alt zonda opasite (konsolidasyon)
+    d.rectangle([330, 80, 370, 720], fill=150)   # mediasten
+    for i in range(8):
+        d.arc([60, 140 + i * 60, 640, 260 + i * 60], 200, 340, fill=170, width=6)   # kaburgalar
+    return im.filter(ImageFilter.GaussianBlur(4)).convert("RGB")
+
+
+figure_page(["Akut miyokard enfarktüsünde EKG bulguları zamanla değişir (Şekil 1)."],
+            "Şekil 1. Akut inferior miyokard enfarktüsünde DII derivasyonu", _ecg(), (460, 153))
+figure_page(["Toplum kökenli pnömonide akciğer grafisinde lober konsolidasyon görülebilir (Şekil 2)."],
+            "Şekil 2. Sol alt lob pnömonisi, PA akciğer grafisi", _xray(), (300, 343), logo=True)
+for p in range(n - 19):
     t = topics[(p // 30) % len(topics)]
     pool = facts.get(t, []) + [g.format(t=t) for g in generic]
     page(([f"BÖLÜM {(p // 30) + 1}: {t.upper()}"] if p % 30 == 0 else []) + [random.choice(pool) for _ in range(55)])

@@ -25,8 +25,28 @@ DIFFICULTIES = {
 
 QTYPES = {"mcq": "Çoktan seçmeli", "open": "Klasik (uzun cevaplı)", "mixed": "Karışık"}
 # Quiz ekranında seçilebilen türler (klasik soru quizden kaldırıldı; vakalarda ve eski kayıtlarda duruyor)
-QUIZ_TYPES = {"mcq": "Test", "fill": "Boşluk doldurma", "match": "Eşleştirme"}
-TYPE_LABELS = {"mcq": "Çoktan seçmeli", "fill": "Boşluk doldurma", "match": "Eşleştirme", "open": "Klasik"}
+QUIZ_TYPES = {"mcq": "Test", "fill": "Boşluk doldurma", "match": "Eşleştirme", "image": "Şekilli"}
+TYPE_LABELS = {"mcq": "Çoktan seçmeli", "fill": "Boşluk doldurma", "match": "Eşleştirme", "open": "Klasik",
+               "image": "Şekilli soru"}
+
+SYSTEM_FIGURE = """Sen tıp eğitimi için görsel (şekil) temelli sınav soruları yazan deneyimli bir öğretim üyesisin.
+Sana kaynak kitaptan kesilmiş ŞEKİLLER (röntgen, BT/MR, EKG, histoloji/patoloji, klinik fotoğraf, endoskopi,
+grafik, şema, anatomi çizimi…) ve her birinin geçtiği sayfanın metni verilir. Her kullanılabilir şekil için TEK bir
+5 şıklı çoktan seçmeli soru yaz.
+KURALLAR:
+- Soru, ŞEKLE BAKMADAN cevaplanamamalı: öğrenci görüntüdeki bulguyu tanımalı/yorumlamalı (ör. "Görüntüdeki bulgu
+  en çok hangisiyle uyumludur?", "İşaretli yapı hangisidir?", "Bu EKG'de hangi derivasyonlarda… ?",
+  "Bu hasta için en uygun sonraki adım?"). Gerekirse kısa bir klinik öykü ekle.
+- Soru kökünde ve şıklarda şeklin başlığındaki ya da sayfa metnindeki tanıyı/cevabı AÇIKÇA SÖYLEME.
+- Doğru cevap şekil ve sayfa metniyle uyumlu olmalı; veri uydurma. Emin olamıyorsan o şekli kullanma.
+- Şekil tıbbi açıdan soru sormaya uygun değilse (logo, süs, kapak, yazı/tablo görüntüsü, okunmayan küçük resim)
+  "usable": false döndür.
+- Açıklamada şekilde neye bakılması gerektiğini öğret (hangi bulgu, nerede).
+YALNIZCA şu JSON'u döndür:
+{"questions": [{"figure": 1, "usable": true, "topic": "kısa konu", "question": "soru kökü",
+  "options": ["şık 1", "şık 2", "şık 3", "şık 4", "şık 5"], "answer_index": 0,
+  "explanation": "neden doğru; şekilde nereye bakılmalı"}]}
+Şıklarda "A)" gibi harf öneki kullanma."""
 
 BATCH = 5
 
@@ -208,7 +228,21 @@ class QuizEngine:
             raise LLMError("Kütüphane boş. Önce Kütüphane sekmesinden PDF, Word, metin veya web sayfası ekleyin.")
         llm = make_llm(self.llm_factory, "heavy")
         out: list[dict] = []
+        self.last_note = ""
         want = dict(req.counts) if req.counts else None
+        if want and want.get("image"):
+            n_img = want.pop("image")
+            imgs, note = self.image_questions(req, n_img, llm, should_stop)
+            if imgs:
+                out.extend(imgs)
+                if on_batch:
+                    on_batch(imgs)
+            if len(imgs) < n_img:
+                self.last_note = note
+                if not any(v > 0 for v in want.values()) and not imgs:
+                    raise LLMError(note)
+            if not any(v > 0 for v in want.values()):
+                return out
         remaining = sum(want.values()) if want else max(1, req.count)
         recent = self.db.recent_question_texts(40)
         attempts = 0
@@ -390,6 +424,91 @@ class QuizEngine:
             if not base["model_answer"]:
                 return None
         return base
+
+    # ------------------------------------------------------------- şekilli
+    def image_questions(self, req: GenRequest, n: int, llm, should_stop=None) -> tuple[list[dict], str]:
+        """Kaynak PDF'lerdeki şekillerden şekil temelli sorular. (sorular, eksik kalırsa açıklama)"""
+        import base64
+        from pathlib import Path
+
+        from . import figures
+        from .summary import _page_of
+        docs = [d for d in self.db.list_documents()
+                if d["kind"] == "pdf" and Path(d["source"]).is_file()
+                and (req.doc_ids is None or d["id"] in req.doc_ids)]
+        if not docs:
+            return [], ("Şekilli soru için kaynaklarda PDF bulunamadı (şekiller yalnızca PDF'lerden alınabilir; "
+                        "Word/metin kaynaklarında şekil yok).")
+        hint = None
+        if req.topic.strip():
+            hint = {}
+            for h in self.retriever.search(req.topic, k=24, doc_ids=[d["id"] for d in docs]):
+                p = _page_of(h.get("location", ""))
+                if p and h.get("doc_id"):
+                    lst = hint.setdefault(h["doc_id"], [])
+                    lst += [q for q in (p, p - 1, p + 1) if q not in lst]
+            if not hint:
+                return [], f"“{req.topic}” konusu PDF kaynaklarda bulunamadı; şekilli soru için konu alanını boş bırak."
+        used_key = f"used_figures:{req.profile}"
+        try:
+            used = set(json.loads(self.db.get_meta(used_key, "[]")))
+        except ValueError:
+            used = set()
+        figs = figures.find_figures(docs, n + 2, pages_hint=hint, skip=used, rng=self.rng)
+        if len(figs) < n and used:
+            # yeni şekil kalmadı: daha önce sorulan şekillerden FARKLI sorular
+            more = figures.find_figures(docs, n + 2 - len(figs), pages_hint=hint,
+                                        skip={f.key for f in figs}, rng=self.rng)
+            figs += more
+        if not figs:
+            where = f"“{req.topic}” ile ilgili sayfalarda" if hint else "Seçili PDF'lerde"
+            return [], (f"{where} soru yapılabilecek şekil (gömülü görüntü) bulunamadı. Şekiller "
+                        "kitabın içinde resim olarak bulunmalı; taranmış sayfalarda ya da çizim (vektör) şekillerde "
+                        "henüz çalışmıyor.")
+        titles = {d["id"]: d["title"] for d in docs}
+        out: list[dict] = []
+        for i in range(0, len(figs), 4):
+            if len(out) >= n or (should_stop and should_stop()):
+                break
+            group = figs[i:i + 4]
+            parts: list[dict] = [{"type": "text", "text":
+                                  f"Zorluk: {req.difficulty} — {DIFFICULTIES.get(req.difficulty, '')}\n"
+                                  + (f"Odak konu: {req.topic}\n" if req.topic.strip() else "")
+                                  + f"{LANG_RULE.get(req.language, '')}\n"
+                                  f"Aşağıda {len(group)} şekil var; her biri için (uygunsa) 1 soru yaz."}]
+            for k, f in enumerate(group, 1):
+                parts.append({"type": "text", "text": f"--- ŞEKİL {k} — kaynak: {titles.get(f.doc_id, '')}, "
+                                                      f"s. {f.page}. Sayfa metni: {f.context[:1800]}"})
+                parts.append({"type": "image", "data": f.image, "mime": "image/jpeg"})
+            data = llm.complete_json(SYSTEM_FIGURE, parts, max_tokens=8000, temperature=0.4)
+            for item in nz.items(data, "questions", "items", "sorular"):
+                if not isinstance(item, dict) or item.get("usable") is False:
+                    continue
+                try:
+                    k = int(item.get("figure", 0))
+                except (TypeError, ValueError):
+                    continue
+                if not 1 <= k <= len(group):
+                    continue
+                f = group[k - 1]
+                item = dict(item, type="mcq")
+                src = {"id": None, "title": titles.get(f.doc_id, ""), "location": f"s. {f.page}",
+                       "text": f.context[:1500]}
+                q = self._normalize(item, {}, [src])
+                if not q:
+                    continue
+                q.update(type="mcq", chunk_ids=[], image=base64.b64encode(f.image).decode(),
+                         figure=f"{titles.get(f.doc_id, '')} — s. {f.page}" + (f" ({f.caption})" if f.caption else ""))
+                q["model"] = getattr(llm, "label", "")
+                q["id"] = self.db.save_question("mcq", q.get("topic", req.topic), req.difficulty, q, [], req.profile)
+                used.add(f.key)
+                out.append(q)
+                if len(out) >= n:
+                    break
+        self.db.set_meta(used_key, json.dumps(sorted(used)[-2000:]))
+        note = "" if len(out) >= n else (f"{n} şekilli soru istendi, {len(out)} hazırlanabildi (kaynakta yeterli uygun "
+                                         "şekil yok).")
+        return out, note
 
     @staticmethod
     def score_match(q: dict, chosen: list[int | None]) -> float:

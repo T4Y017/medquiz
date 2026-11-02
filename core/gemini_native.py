@@ -101,6 +101,9 @@ class GeminiNative:
                     if p.get("type") == "pdf":
                         parts.append({"inline_data": {"mime_type": "application/pdf",
                                                       "data": base64.b64encode(p["data"]).decode()}})
+                    elif p.get("type") == "image":
+                        parts.append({"inline_data": {"mime_type": p.get("mime", "image/jpeg"),
+                                                      "data": base64.b64encode(p["data"]).decode()}})
                     else:
                         parts.append({"text": p.get("text", "")})
             else:

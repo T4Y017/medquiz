@@ -171,6 +171,13 @@ class LLMClient:
                     else:
                         parts.append({"type": "file", "file": {"filename": p.get("name", "kaynak.pdf"),
                                                                "file_data": f"data:application/pdf;base64,{b64}"}})
+                elif p.get("type") == "image":
+                    b64 = base64.b64encode(p["data"]).decode()
+                    mime = p.get("mime", "image/jpeg")
+                    if self.provider == "anthropic":
+                        parts.append({"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}})
+                    else:
+                        parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
                 else:
                     parts.append({"type": "text", "text": p.get("text", "")})
             out.append({"role": m["role"], "content": parts})
