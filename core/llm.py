@@ -242,8 +242,11 @@ class LLMClient:
         if self._native is not None:
             from .gemini_native import GeminiAPIError
             mt = min(65536, max_tokens + self.THINKING_HEADROOM)
+            self.last_finish = ""
             try:
                 yield from self._native.stream(system, messages, mt, temperature)
+                fin = (self._native.last.finish or "").upper()
+                self.last_finish = {"MAX_TOKENS": "length", "STOP": "stop", "": "stop"}.get(fin, fin.lower())
                 from . import usage
                 usage.record(self.model)
             except GeminiAPIError as e:
@@ -254,16 +257,25 @@ class LLMClient:
         messages = self._conv(messages)
         try:
             if self.provider == "anthropic":
+                self.last_finish = ""
                 with self._client.messages.stream(
                     model=self.model, system=system, messages=messages,
                     max_tokens=max_tokens, temperature=temperature,
                 ) as s:
                     yield from s.text_stream
+                    try:
+                        sr = s.get_final_message().stop_reason or ""
+                    except Exception:  # noqa: BLE001
+                        sr = ""
+                self.last_finish = {"max_tokens": "length", "end_turn": "stop", "": "stop"}.get(sr, sr)
                 return
             kw = self._openai_kwargs(max_tokens, temperature)
             kw.update(stream=True, messages=[{"role": "system", "content": system}, *messages])
             s = self._openai_create(kw)
+            self.last_finish = ""
             for ev in s:
+                if ev.choices and ev.choices[0].finish_reason:
+                    self.last_finish = ev.choices[0].finish_reason
                 if ev.choices and ev.choices[0].delta and ev.choices[0].delta.content:
                     yield ev.choices[0].delta.content
         except LLMError:
@@ -468,9 +480,11 @@ class RoutedLLM:
                     client = self._make(p, m)
                     self.used = client.label
                     self.fell_back = (p, m) != self.candidates[0]
+                    self.last_finish = ""
                     for piece in client.stream(system, messages, max_tokens=max_tokens, temperature=temperature):
                         started = True
                         yield piece
+                    self.last_finish = getattr(client, "last_finish", "") or "stop"
                     self._cooldown_until.pop((p, m), None)
                     return
                 except LLMError as e:

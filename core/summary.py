@@ -19,7 +19,8 @@ from .llm import LLMError
 log = logging.getLogger(__name__)
 
 MAX_PAGES = 120           # bir analizde en fazla
-PAGES_PER_PART = 25       # bir istekte en fazla (uzun aralıklar parçalara bölünür)
+PAGES_PER_PART = 15       # bir istekte en fazla (uzun aralıklar parçalara bölünür; az sayfa = daha ayrıntılı özet)
+MAX_CONTINUE = 3          # yanıt kesilirse (uzunluk/alıntı filtresi) kaldığı yerden devam isteği sayısı
 MAX_PDF_BYTES = 15_000_000
 MAX_TEXT_CHARS = 70_000
 
@@ -45,7 +46,20 @@ GENEL KURALLAR:
 - Grafik, şema, akış diyagramı, harita gibi görselleri ilişkileriyle birlikte açıklayıcı Türkçe paragrafla anlat;
   üstüne "**Şekil N: başlık**" yaz.
 - Birimler: ağırlık kg, boy cm, hacim mL; diğer birimleri de uygun SI birimine çevir.
-- Sade, açık ve öz Türkçe kullan (talimat başka dil istemedikçe)."""
+- Sade, açık ve öz Türkçe kullan (talimat başka dil istemedikçe).
+- Kaynaktaki paragrafları birebir kopyalama; bilgiyi kendi cümlelerinle aktar (tablolardaki veri, ilaç adı, doz ve
+  sayılar aynen kalabilir).
+- Kaynağın SONUNA kadar işle; seçilen sayfaların hepsini kapsa, ilk sayfalarda kalıp bitirme."""
+
+CONTINUE_MSG = {
+    "length": "Yanıtın uzunluk sınırına takılıp kesildi. Kaldığın yerden, tekrar etmeden devam et ve kaynağın kalan "
+              "kısmını da işle. Daha önce yazdıklarını yineleme.",
+    "recitation": "Yanıtın, kaynaktan birebir alıntı yaptığı için kesildi. Kaldığın yerden devam et; bu kez kaynaktaki "
+                  "cümleleri KOPYALAMA, bilgiyi kendi cümlelerinle ve Türkçe yaz (tablolarda veriyi koruyup ifadeyi "
+                  "kendin kur). Daha önce yazdıklarını yineleme.",
+    "other": "Yanıtın yarıda kesildi. Kaldığın yerden, tekrar etmeden devam et ve kaynağın kalan kısmını da işle.",
+}
+STOP_REASONS = {"stop", "end_turn", "stop_sequence", ""}
 
 QUESTION_RULES = """SORULAR İÇİN ZORUNLU KURALLAR:
 1. Her soruya konuyu açan, bilgi veren bir cümleyle başla, sonra soruyu sor.
@@ -386,12 +400,36 @@ class SummaryEngine:
             parts = self._parts(src, pk, head + "\nTALİMAT:\n" + instr)
             llm = make_llm(self.llm_factory, "heavy")
             out = ""
-            for piece in llm.stream(SYSTEM_SUMMARY, [{"role": "user", "content": parts}], max_tokens=30000,
-                                    temperature=0.3):
-                if should_stop and should_stop():
-                    return
-                out += piece
-                yield piece
+            msgs: list[dict] = [{"role": "user", "content": parts}]
+            for rnd in range(MAX_CONTINUE + 1):
+                try:
+                    for piece in llm.stream(SYSTEM_SUMMARY, msgs, max_tokens=30000, temperature=0.3):
+                        if should_stop and should_stop():
+                            return
+                        out += piece
+                        yield piece
+                except LLMError as e:
+                    if not out and i == 1:
+                        raise                               # hiç yazılamadı: kullanıcıya hata göster
+                    log.warning("Özet bölüm %d yarıda kaldı: %s", i, e)
+                    yield f"\n\n> ⚠️ Bu bölüm yarıda kaldı: {e}\n"
+                    self.table_report["cut"] = self.table_report.get("cut", 0) + 1
+                    break
+                fin = (getattr(llm, "last_finish", "") or "").lower()
+                if fin in STOP_REASONS:
+                    break
+                kind = "length" if fin in ("length", "max_tokens") else "recitation" if "recit" in fin else "other"
+                log.info("Özet bölüm %d kesildi (%s); devam isteniyor (%d)", i, fin, rnd + 1)
+                self.table_report["continued"] = self.table_report.get("continued", 0) + 1
+                if rnd == MAX_CONTINUE:
+                    yield ("\n\n> ⚠️ Yapay zekâ bu bölümü tamamlayamadı "
+                           f"({'uzunluk sınırı' if kind == 'length' else 'alıntı filtresi' if kind == 'recitation' else fin}). "
+                           "Daha dar bir sayfa aralığıyla tekrar deneyebilirsin.\n")
+                    break
+                msgs = [{"role": "user", "content": parts}, {"role": "assistant", "content": out},
+                        {"role": "user", "content": CONTINUE_MSG[kind]}]
+                if kind != "length":                 # uzunlukta cümle ortasından devam edilir
+                    yield "\n\n"
             self.last_label = getattr(llm, "label", "")
             fixed = mdfix.normalize_markdown(out)
             n_tables = mdfix.count_tables(fixed)

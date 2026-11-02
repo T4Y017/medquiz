@@ -84,6 +84,7 @@ class SummaryPage(QWidget):
 
         card = QFrame()
         card.setObjectName("card")
+        self.cfg_card = card
         g = QGridLayout(card)
         g.setContentsMargins(16, 14, 16, 14)
         g.setHorizontalSpacing(10)
@@ -168,6 +169,7 @@ class SummaryPage(QWidget):
         split = QSplitter(Qt.Horizontal)
         left = QFrame()
         left.setObjectName("card")
+        self.left_panel = left
         ll = QVBoxLayout(left)
         ll.setContentsMargins(10, 10, 10, 10)
         hl = QLabel("Kayıtlı özetler")
@@ -192,6 +194,22 @@ class SummaryPage(QWidget):
         self.view = QTextBrowser()
         self.view.setOpenExternalLinks(True)
         attach_menu(self.view, ctx, "özet", "Özet — çeviri")
+        vt = QHBoxLayout()
+        vt.addStretch()
+        self.zoom_out_btn = QPushButton("A−")
+        self.zoom_out_btn.setToolTip("Yazıyı küçült (Ctrl + fare tekerleği de olur)")
+        self.zoom_out_btn.clicked.connect(lambda: self._zoom(-1))
+        self.zoom_in_btn = QPushButton("A+")
+        self.zoom_in_btn.setToolTip("Yazıyı büyüt (Ctrl + fare tekerleği de olur)")
+        self.zoom_in_btn.clicked.connect(lambda: self._zoom(+1))
+        self.focus_btn = QPushButton("⛶ Geniş görünüm")
+        self.focus_btn.setCheckable(True)
+        self.focus_btn.setToolTip("Özeti tüm sayfaya yay: ayarları ve kayıtlı listeyi gizle (Esc ile geri dön)")
+        self.focus_btn.toggled.connect(self.set_focus_mode)
+        for b in (self.zoom_out_btn, self.zoom_in_btn, self.focus_btn):
+            b.setFixedHeight(30)
+            vt.addWidget(b)
+        rl.addLayout(vt)
         rl.addWidget(self.view, 1)
         br = QHBoxLayout()
         self.meta = QLabel("")
@@ -462,6 +480,7 @@ class SummaryPage(QWidget):
         return f"# {c['title']}\n\n*{c['scope']} · {c['template']}*{notes}\n\n---\n\n"
 
     def _show(self, c: dict | None, streaming: bool = False):
+        self._apply_zoom()
         if c is None:
             self.view.setHtml(
                 f"<div style='color:{style.MUTED}; padding:30px'>"
@@ -548,6 +567,30 @@ class SummaryPage(QWidget):
             toast(self, "PDF kaydedildi.")
         else:
             QMessageBox.warning(self, "Hata", "PDF yazılamadı. Dosya başka bir programda açık olabilir.")
+
+    def _zoom(self, step: int):
+        z = max(-4, min(10, int(self.ctx.settings.extra.get("summary_zoom", 0)) + step))
+        self.ctx.settings.extra["summary_zoom"] = z
+        self.ctx.settings.save()
+        self._apply_zoom()
+
+    def _apply_zoom(self):
+        f = self.view.font()
+        f.setPointSizeF(max(7.0, self.ctx.settings.font_size + int(self.ctx.settings.extra.get("summary_zoom", 0))))
+        self.view.document().setDefaultFont(f)
+
+    def set_focus_mode(self, on: bool):
+        self.cfg_card.setVisible(not on)
+        self.left_panel.setVisible(not on)
+        self.focus_btn.setText("✕ Geniş görünümden çık" if on else "⛶ Geniş görünüm")
+        if self.focus_btn.isChecked() != on:
+            self.focus_btn.setChecked(on)
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape and self.focus_btn.isChecked():
+            self.set_focus_mode(False)
+            return
+        super().keyPressEvent(e)
 
     def make_cards(self):
         c = self.current
