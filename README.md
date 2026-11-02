@@ -20,6 +20,7 @@ sistemi çalışır.
 | 🔬 **Paraklinik vaka aşamaları** | Hemogram, biyokimya, kan gazı, EKG, görüntüleme, patoloji sonuçları tablo hâlinde (referans aralığı, ↑/↓ işaretli); görev bu sonuçları yorumlatır |
 | 📝 **Vaka sonu testi** | Vaka bittikten sonra 0–10 soruluk TUS tarzı test (yarısı paraklinik yorum); aşama ve test puanı ayrı gösterilir |
 | 📝 **Quiz** | Türe göre ayrı sayı: Test (5 şık, çeşitli TUS kalıpları) · Boşluk doldurma (yazım hatasına hoşgörülü) · Eşleştirme · Şekilli (PDF'teki röntgen/EKG/histoloji/klinik fotoğraf gösterilip yorumlatılır) · Kolay / Orta / Zor / Klinik vaka |
+| 🃏 **Bilgi kartları** | Özetten tek tıkla soru–cevap kartları (önizleyip düzelterek kaydet) ya da quizde “Karta ekle”; desteler, aralıklı tekrar (bildikçe 1-3-7-16… gün), şekilli kartlar |
 | 📑 **Özet** | Kaynaktan (PDF sayfa aralığı ya da konu) ayrıntılı özet: sınıflama, klinik protokol, kaynaktaki tablolar gerçek tablo olarak (eksik kalırsa ayrıca çıkarılıp eklenir) + özet tabloları, soru setleri, pediatrik vakalar, İngilizce cloze/AWL · kendi şablonun · PDF/Markdown dışa aktarma |
 | 💬 **Sohbet** | Kaynak seçimi, hazır işlemler (Özetle, Karşılaştır, Ayırıcı tanı, Tedavi ve dozlar, Basitçe anlat, Beni sına), tablolu cevaplar |
 | ♾️ **Sürekli mod** | Sorular bittikçe arka planda yenileri üretilir, daha önce sorulanlar tekrarlanmaz |

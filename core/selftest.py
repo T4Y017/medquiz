@@ -265,6 +265,18 @@ def run(pdf: str | None, out: str) -> int:
                     "stems": [q["question"][:140] for q in imgs],
                     "answers": [q["options"][q["answer_index"]][:60] for q in imgs], "note": qe.last_note}
 
+        def flashcards():
+            from .cards import cards_from_summary
+            from .quiz import make_llm
+            md = ("## Diyabetik ketoasidoz\n\n- Tanı: glukoz > 250 mg/dL, pH < 7,30, HCO3 < 18 mEq/L, ketonemi.\n"
+                  "- Potasyum < 3,3 mEq/L ise insülinden önce potasyum verilir.\n"
+                  "- İnsülin infüzyonu 0,1 U/kg/saat.\n\n| Şiddet | pH |\n|---|---|\n| Hafif | 7,25-7,30 |\n"
+                  "| Orta | 7,00-7,24 |\n| Ağır | < 7,00 |\n")
+            cards = cards_from_summary(make_llm(factory, "heavy"), md, "DKA", n=8)
+            if len(cards) < 3:
+                raise RuntimeError(f"Yeterli kart çıkmadı: {cards}")
+            return {"cards": len(cards), "sample": [f"{c['front'][:70]} → {c['back'][:40]}" for c in cards[:3]]}
+
         def summary():
             from .summary import TEMPLATES, SummaryEngine
             se = SummaryEngine(db, retr2, factory)
@@ -378,6 +390,7 @@ def run(pdf: str | None, out: str) -> int:
         steps = [(f"{prov}: Ayarlar > Test düğmesi", settings_test), (f"{prov}: quiz üretimi (test + boşluk + eşleştirme)", quiz),
                  (f"{prov}: PDF sayfalarından özet (tablolu)", summary),
                  (f"{prov}: şekilli sorular (kitaptaki görüntülerden)", figure_quiz),
+                 (f"{prov}: bilgi kartları (özetten)", flashcards),
                          (f"{prov}: İngilizce soru + çeviri + kelime tanımı", english_and_translate),
                          (f"{prov}: tekrar quizi (5 test + 5 eşleştirme) + kısa cevap puanı", review_and_short_answer), (f"{prov}: klasik cevap puanlama", grade),
                          (f"{prov}: vaka üretimi (paraklinik + test)", case),

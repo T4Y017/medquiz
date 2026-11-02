@@ -94,6 +94,21 @@ CREATE TABLE IF NOT EXISTS chats (
     profile TEXT DEFAULT '',
     messages TEXT NOT NULL DEFAULT '[]'
 );
+CREATE TABLE IF NOT EXISTS cards (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at REAL NOT NULL,
+    deck TEXT NOT NULL DEFAULT '',
+    front TEXT NOT NULL,
+    back TEXT NOT NULL DEFAULT '',
+    image TEXT DEFAULT '',
+    topic TEXT DEFAULT '',
+    source TEXT DEFAULT '',
+    profile TEXT DEFAULT '',
+    box INTEGER DEFAULT 0,
+    due_at REAL NOT NULL,
+    reviews INTEGER DEFAULT 0,
+    lapses INTEGER DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS cases (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at REAL NOT NULL,
@@ -131,7 +146,7 @@ class Database:
 
     # Bilgisayarlar arası eşitleme için: her satıra küresel kimlik (uid), değişiklik zamanı (mtime) ve
     # silinenler için iz (tombstone). Tetikleyiciler sayesinde mevcut kodun değişmesi gerekmez.
-    SYNC_TABLES = ("documents", "questions", "vocab", "summaries", "chats", "cases")
+    SYNC_TABLES = ("documents", "questions", "vocab", "summaries", "chats", "cases", "cards")
 
     def _migrate_sync(self) -> None:
         c = self.conn
@@ -448,6 +463,100 @@ BEGIN INSERT OR REPLACE INTO tombstones(uid, tbl, at) VALUES (OLD.uid, '{t}', {n
     # ---------------------------------------------------------------- vocab
     # Leitner kutuları: kutu n'de doğru bilinen kelime INTERVALS[n] gün sonra tekrar sorulur
     VOCAB_INTERVALS = [1, 3, 7, 16, 35, 90]
+
+    # ------------------------------------------------------------ bilgi kartları
+    CARD_INTERVALS = [1, 3, 7, 16, 35, 90]
+
+    def add_cards(self, cards: list[dict], deck: str, source: str = "", profile: str = "") -> int:
+        now = time.time()
+        with self._lock:
+            existing = {r[0].strip().lower() for r in self.conn.execute(
+                "SELECT front FROM cards WHERE deck = ? AND profile = ?", (deck, profile)).fetchall()}
+            rows = []
+            for c in cards:
+                front = (c.get("front") or "").strip()
+                if not front or front.lower() in existing:
+                    continue
+                existing.add(front.lower())
+                rows.append((now, deck, front, (c.get("back") or "").strip(), c.get("image") or "",
+                             c.get("topic") or "", source, profile, now))
+            self.conn.executemany("INSERT INTO cards(created_at, deck, front, back, image, topic, source, profile, "
+                                  "due_at) VALUES (?,?,?,?,?,?,?,?,?)", rows)
+            self.conn.commit()
+            return len(rows)
+
+    def card_decks(self, profile: str | None = None) -> list[dict]:
+        now = time.time()
+        with self._lock:
+            sql = ("SELECT deck, COUNT(*) AS total, SUM(CASE WHEN due_at <= ? THEN 1 ELSE 0 END) AS due, "
+                   "SUM(CASE WHEN box >= 3 THEN 1 ELSE 0 END) AS learned FROM cards")
+            params: list = [now]
+            if profile is not None:
+                sql += " WHERE profile = ?"
+                params.append(profile)
+            sql += " GROUP BY deck ORDER BY MAX(created_at) DESC"
+            return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
+
+    def list_cards(self, profile: str | None = None, deck: str | None = None, search: str = "",
+                   due_only: bool = False, limit: int = 5000) -> list[dict]:
+        with self._lock:
+            sql, params = "SELECT * FROM cards WHERE 1=1", []
+            if profile is not None:
+                sql += " AND profile = ?"
+                params.append(profile)
+            if deck:
+                sql += " AND deck = ?"
+                params.append(deck)
+            if search:
+                sql += " AND (front LIKE ? OR back LIKE ?)"
+                params += [f"%{search}%", f"%{search}%"]
+            if due_only:
+                sql += " AND due_at <= ?"
+                params.append(time.time())
+                sql += " ORDER BY box ASC, due_at ASC"
+            else:
+                sql += " ORDER BY created_at DESC, id ASC"
+            sql += " LIMIT ?"
+            params.append(limit)
+            return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
+
+    def due_card_count(self, profile: str | None = None) -> int:
+        with self._lock:
+            sql, params = "SELECT COUNT(*) FROM cards WHERE due_at <= ?", [time.time()]
+            if profile is not None:
+                sql += " AND profile = ?"
+                params.append(profile)
+            return self.conn.execute(sql, params).fetchone()[0]
+
+    def review_card(self, cid: int, knew: bool) -> None:
+        now = time.time()
+        with self._lock:
+            r = self.conn.execute("SELECT box FROM cards WHERE id = ?", (cid,)).fetchone()
+            if not r:
+                return
+            if knew:
+                box = r[0]
+                due = now + self.CARD_INTERVALS[min(box, len(self.CARD_INTERVALS) - 1)] * 86400
+                self.conn.execute("UPDATE cards SET box = ?, due_at = ?, reviews = reviews + 1 WHERE id = ?",
+                                  (min(box + 1, len(self.CARD_INTERVALS)), due, cid))
+            else:
+                self.conn.execute("UPDATE cards SET box = 0, due_at = ?, reviews = reviews + 1, lapses = lapses + 1 "
+                                  "WHERE id = ?", (now + 10 * 60, cid))
+            self.conn.commit()
+
+    def update_card(self, cid: int, **fields) -> None:
+        allowed = {k: v for k, v in fields.items() if k in ("front", "back", "deck", "topic")}
+        if not allowed:
+            return
+        with self._lock:
+            self.conn.execute(f"UPDATE cards SET {', '.join(k + ' = ?' for k in allowed)} WHERE id = ?",
+                              list(allowed.values()) + [cid])
+            self.conn.commit()
+
+    def delete_cards(self, ids: list[int]) -> None:
+        with self._lock:
+            self.conn.executemany("DELETE FROM cards WHERE id = ?", [(i,) for i in ids])
+            self.conn.commit()
 
     def find_vocab(self, term: str, profile: str = "") -> dict | None:
         with self._lock:

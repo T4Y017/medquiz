@@ -32,15 +32,16 @@ from ui.quiz_page import QuizPage  # noqa: E402
 from ui.settings_page import SettingsPage  # noqa: E402
 from ui.stats_page import StatsPage  # noqa: E402
 from ui.summary_page import SummaryPage  # noqa: E402
+from ui.cards_page import CardsPage  # noqa: E402
 from ui.vocab_page import VocabPage  # noqa: E402
 
 from core.version import __version__ as VERSION  # noqa: E402
 
 
 class MainWindow(QMainWindow):
-    PAGES = ("Quiz", "Vaka", "Özet", "Sohbet", "Kütüphane", "Kelimeler", "İstatistik", "Ayarlar")
-    SETTINGS_ROW = 7
-    LIBRARY_ROW = 4
+    PAGES = ("Quiz", "Vaka", "Özet", "Kartlar", "Sohbet", "Kütüphane", "Kelimeler", "İstatistik", "Ayarlar")
+    SETTINGS_ROW = 8
+    LIBRARY_ROW = 5
     EXPANDED_W, COLLAPSED_W = 220, 64
     def __init__(self, ctx: AppContext):
         super().__init__()
@@ -120,6 +121,7 @@ class MainWindow(QMainWindow):
         self.quiz = QuizPage(ctx)
         self.case = CasePage(ctx)
         self.summary = SummaryPage(ctx)
+        self.cards = CardsPage(ctx)
         self.chat = ChatPage(ctx)
         self.library = LibraryPage(ctx)
         self.stats = StatsPage(ctx)
@@ -127,6 +129,7 @@ class MainWindow(QMainWindow):
         self.settings = SettingsPage(ctx)
         self._nav_items = []
         for icon, name, page in (("📝", "Quiz", self.quiz), ("🩺", "Vaka", self.case), ("📑", "Özet", self.summary),
+                                 ("🃏", "Kartlar", self.cards),
                                  ("💬", "Sohbet", self.chat),
                                  ("📚", "Kütüphane", self.library), ("📘", "Kelimeler", self.vocab),
                                  ("📊", "İstatistik", self.stats),
@@ -142,6 +145,10 @@ class MainWindow(QMainWindow):
         self.summary.quiz_requested.connect(self._quiz_from_doc)
         self.stats.review_requested.connect(self._review_from_stats)
         self.stats.quiz_requested.connect(self._quiz_from_topic)
+        self.summary.cards_made.connect(lambda: self.go("Kartlar"))
+        ctx.cards_changed.connect(self._nav_counts)
+        ctx.data_synced.connect(self._nav_counts)
+        ctx.profile_changed.connect(lambda _: self._nav_counts())
         self.collapsed = False
         self.set_collapsed(bool(ctx.settings.extra.get("sidebar_collapsed")), save=False)
         ctx.settings_changed.connect(self._apply_style)
@@ -173,6 +180,18 @@ class MainWindow(QMainWindow):
         else:
             self.nav.setCurrentRow(0)
 
+    def _badge(self, name: str) -> str:
+        if name == "Kartlar":
+            n = self.ctx.db.due_card_count(self.ctx.profile)
+            return f"  ({n})" if n else ""
+        return ""
+
+    def _nav_counts(self):
+        for it, icon, name in self._nav_items:
+            if name == "Kartlar":
+                it.setText(icon if self.collapsed else f"{icon}   {name}{self._badge(name)}")
+                it.setToolTip(f"Bilgi kartları — bugün {self.ctx.db.due_card_count(self.ctx.profile)} tekrar")
+
     def go(self, name: str) -> None:
         self.nav.setCurrentRow(self.PAGES.index(name))
 
@@ -185,7 +204,7 @@ class MainWindow(QMainWindow):
         self.toggle_btn.setText("»" if on else "«")
         self.nav.setProperty("compact", on)
         for it, icon, name in self._nav_items:
-            it.setText(icon if on else f"{icon}   {name}")
+            it.setText(icon if on else f"{icon}   {name}{self._badge(name)}")
             it.setTextAlignment(Qt.AlignCenter if on else (Qt.AlignLeft | Qt.AlignVCenter))
         self.nav.style().unpolish(self.nav)
         self.nav.style().polish(self.nav)

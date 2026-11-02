@@ -56,6 +56,7 @@ class TemplateDialog(QDialog):
 
 class SummaryPage(QWidget):
     quiz_requested = Signal(list, str)      # belge kimlikleri, konu
+    cards_made = Signal()                   # kartlar kaydedildi → Kartlar sekmesine geç
 
     def __init__(self, ctx: AppContext):
         super().__init__()
@@ -200,6 +201,9 @@ class SummaryPage(QWidget):
         self.vocab_btn.setToolTip("Özetteki kelime tablosunu Kelimeler sekmesine ekler")
         self.vocab_btn.clicked.connect(self.add_vocab)
         self.vocab_btn.hide()
+        self.cards_btn = QPushButton("🃏 Bilgi kartı yap")
+        self.cards_btn.setToolTip("Bu özetten soru–cevap bilgi kartları çıkar (kaydetmeden önce görürsün)")
+        self.cards_btn.clicked.connect(self.make_cards)
         self.quiz_btn = QPushButton("📝 Quiz")
         self.quiz_btn.setToolTip("Bu kaynaktan quiz başlat")
         self.quiz_btn.clicked.connect(self._quiz)
@@ -212,7 +216,7 @@ class SummaryPage(QWidget):
         pdf.setToolTip("Tablolarıyla birlikte PDF olarak kaydet")
         pdf.setObjectName("primary")
         pdf.clicked.connect(self.save_pdf)
-        for b in (self.vocab_btn, self.quiz_btn, cp, md, pdf):
+        for b in (self.vocab_btn, self.cards_btn, self.quiz_btn, cp, md, pdf):
             br.addWidget(b)
         rl.addLayout(br)
         split.addWidget(right)
@@ -544,6 +548,55 @@ class SummaryPage(QWidget):
             toast(self, "PDF kaydedildi.")
         else:
             QMessageBox.warning(self, "Hata", "PDF yazılamadı. Dosya başka bir programda açık olabilir.")
+
+    def make_cards(self):
+        c = self.current
+        if not c or not c.get("markdown") or self.task:
+            QMessageBox.information(self, "Bilgi kartı", "Önce bir özet oluştur ya da soldan kayıtlı bir özet aç.")
+            return
+        from core.cards import cards_from_summary
+        from core.quiz import make_llm
+        factory = self.ctx.summary_engine.llm_factory
+        md, title = c["markdown"], c["title"]
+        self.cards_btn.setEnabled(False)
+        self.cards_btn.setText("Kartlar hazırlanıyor…")
+        self.busy.show()
+
+        def done(cards):
+            self._cards_reset()
+            if not cards:
+                QMessageBox.warning(self, "Bilgi kartı", "Bu özetten kart çıkarılamadı. Tekrar deneyebilirsin.")
+                return
+            from .cards_page import CardPreviewDialog
+            dlg = CardPreviewDialog(cards, title[:80], self)
+            if not dlg.exec():
+                return
+            chosen = dlg.cards()
+            n = self.ctx.db.add_cards(chosen, dlg.deck.text().strip() or title[:80], f"özet: {title[:60]}",
+                                      self.ctx.profile)
+            self.ctx.cards_changed.emit()
+            box = QMessageBox(self)
+            box.setWindowTitle("Bilgi kartları")
+            box.setText(f"🃏 {n} kart “{dlg.deck.text().strip() or title[:80]}” destesine eklendi."
+                        + (f" ({len(chosen) - n} tanesi zaten vardı.)" if len(chosen) > n else ""))
+            go = box.addButton("Kartlara git ve çalış", QMessageBox.AcceptRole)
+            box.addButton("Kapat", QMessageBox.RejectRole)
+            box.exec()
+            if box.clickedButton() is go:
+                self.cards_made.emit()
+
+        def fail(e):
+            self._cards_reset()
+            QMessageBox.warning(self, "Bilgi kartı", str(e))
+
+        self.ctx.runner.start(lambda p, t: cards_from_summary(make_llm(factory, "heavy"), md, title),
+                              on_result=done, on_error=fail)
+
+    def _cards_reset(self):
+        self.cards_btn.setEnabled(True)
+        self.cards_btn.setText("🃏 Bilgi kartı yap")
+        if not self.task:
+            self.busy.hide()
 
     def _quiz(self):
         if self.current and self.current.get("doc_id"):

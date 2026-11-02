@@ -365,7 +365,14 @@ class QuizPage(QWidget):
         self.src_btn.setCheckable(True)
         self.src_btn.toggled.connect(lambda on: (self.src_view.setVisible(on),
                                                  self.src_btn.setText("Kaynak metni gizle" if on else "Kaynak metni göster")))
-        fbl.addWidget(self.src_btn, 0, Qt.AlignLeft)
+        frow = QHBoxLayout()
+        frow.addWidget(self.src_btn)
+        self.card_btn = QPushButton("🃏 Karta ekle")
+        self.card_btn.setToolTip("Bu soruyu bilgi kartı olarak kaydet (Kartlar sekmesinde aralıklı tekrarla çalışırsın)")
+        self.card_btn.clicked.connect(self.add_card)
+        frow.addWidget(self.card_btn)
+        frow.addStretch()
+        fbl.addLayout(frow)
         self.src_view = QTextBrowser()
         self.src_view.setMinimumHeight(180)
         self.src_view.hide()
@@ -1120,7 +1127,20 @@ class QuizPage(QWidget):
         else:
             self.answer_fill()
 
+    def add_card(self):
+        q = self.current()
+        if not q:
+            return
+        from core.cards import card_from_question
+        deck = f"Quiz — {q.get('topic') or 'Genel'}"[:80]
+        n = self.ctx.db.add_cards([card_from_question(q)], deck, "quiz", self.ctx.profile)
+        self.ctx.cards_changed.emit()
+        self.card_btn.setText("✓ Karta eklendi" if n else "✓ Zaten kartlarda")
+        self.card_btn.setEnabled(False)
+
     def _set_sources(self, q: dict):
+        self.card_btn.setText("🃏 Karta ekle")
+        self.card_btn.setEnabled(True)
         srcs = q.get("sources") or []
         texts = q.get("source_texts") or []
         parts = []
