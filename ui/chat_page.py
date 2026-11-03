@@ -128,6 +128,13 @@ class ChatPage(QWidget):
         t.setObjectName("h1")
         head.addWidget(t)
         head.addStretch()
+        from .lang import lang_combo
+        ll = QLabel("Yanıt dili:")
+        ll.setObjectName("muted")
+        head.addWidget(ll)
+        self.ans_lang = lang_combo(self.ctx, auto=True, tooltip="Otomatik: Türkçe sorarsan Türkçe, İngilizce sorarsan "
+                                                                 "İngilizce cevap verir.")
+        head.addWidget(self.ans_lang)
         al = QLabel("Yapay zekâ:")
         al.setObjectName("muted")
         head.addWidget(al)
@@ -376,9 +383,11 @@ class ChatPage(QWidget):
         did = self.scope_cb.currentData()
         doc_ids = [did] if did is not None else None
         search_q = topic or None
+        ans_lang = self.ans_lang.currentData()
 
         def job(progress, task):
-            stream, hits, llm = engine.chat_stream(text, prior, doc_ids=doc_ids, search_query=search_q)
+            stream, hits, llm = engine.chat_stream(text, prior, doc_ids=doc_ids, search_query=search_q,
+                                                   answer_lang=ans_lang)
             progress(("sources", hits))
             try:
                 for piece in stream:

@@ -270,6 +270,9 @@ class SummaryPage(QWidget):
         g.addWidget(lab("Şablon"), 4, 0)
         trow = QHBoxLayout()
         trow.addWidget(self.tpl_cb, 1)
+        from .lang import lang_combo
+        self.lang_cb = lang_combo(ctx, tooltip="Özetin dili. Kaynak hangi dilde olursa olsun bu dilde yazılır.")
+        trow.addWidget(self.lang_cb)
         self.edit_btn = QPushButton("Düzenle / kendi şablonum")
         self.edit_btn.clicked.connect(self.edit_template)
         trow.addWidget(self.edit_btn)
@@ -553,6 +556,7 @@ class SummaryPage(QWidget):
         key, name, prompt = self._template()
         want_tables = TEMPLATES[key].get("tables", False) if key in TEMPLATES else None
         topic = self.topic_le.text().strip()
+        lang = self.lang_cb.currentData()
         engine = self.ctx.summary_engine
         try:
             src = engine.build_multi(items, topic)
@@ -576,7 +580,7 @@ class SummaryPage(QWidget):
 
         def job(progress, task):
             for piece in engine.run(src, prompt, topic, should_stop=lambda: state["stop"] or task.cancelled,
-                                    want_tables=want_tables):
+                                    want_tables=want_tables, language=lang):
                 progress(piece)
             return getattr(engine, "last_label", "")
 

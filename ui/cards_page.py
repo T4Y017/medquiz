@@ -147,6 +147,9 @@ class SourceCardsDialog(QDialog):
         self.count.setValue(25)
         self.count.setSuffix(" kart (yaklaşık)")
         f.addRow("Kart sayısı", self.count)
+        from .lang import lang_combo
+        self.lang = lang_combo(ctx)
+        f.addRow("Kartların dili", self.lang)
         lay.addLayout(f)
         lay.addStretch()
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -432,6 +435,7 @@ class CardsPage(QWidget):
         if not dlg.exec():
             return
         items, topic, n = dlg.items(), dlg.topic.text().strip(), dlg.count.value()
+        lang = dlg.lang.currentData()
         engine = self.ctx.summary_engine
         try:
             src = engine.build_multi(items, topic)
@@ -473,7 +477,7 @@ class CardsPage(QWidget):
             QMessageBox.warning(self, "Bilgi kartı", str(e))
 
         self.ctx.runner.start(lambda p, t: cards_from_source(engine, src, factory, n, topic,
-                                                             should_stop=lambda: t.cancelled),
+                                                             should_stop=lambda: t.cancelled, language=lang),
                               on_result=done, on_error=fail)
 
     def _select_deck(self, name: str):

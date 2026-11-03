@@ -202,6 +202,10 @@ class SettingsPage(QWidget):
         self.emb = QCheckBox("Anlamsal arama (çok dilli embedding modeli, ilk kullanımda ~220 MB indirilir)")
         self.emb.setChecked(s.use_embeddings)
         f2.addRow("", self.emb)
+        from .lang import lang_combo
+        self.content_lang = lang_combo(ctx, tooltip="Quiz, vaka, özet ve bilgi kartlarında varsayılan dil. Her ekranda "
+                                                    "ayrıca değiştirebilirsin; sohbet sorduğun dilde cevap verir.")
+        f2.addRow("Varsayılan içerik dili", self.content_lang)
         self.font = QSpinBox()
         self.font.setRange(9, 18)
         self.font.setValue(s.font_size)
@@ -328,6 +332,7 @@ class SettingsPage(QWidget):
         s.default_count = self.count.value()
         s.use_embeddings = self.emb.isChecked()
         s.font_size = self.font.value()
+        s.extra["content_lang"] = self.content_lang.currentData()
         s.auto_update = self.auto_upd.isChecked()
         s.gemini_save_quota = self.save_quota.isChecked()
         if not s.key_for(s.provider) and s.has_any_key:

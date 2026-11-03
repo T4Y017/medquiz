@@ -61,6 +61,13 @@ CONTINUE_MSG = {
 }
 STOP_REASONS = {"stop", "end_turn", "stop_sequence", ""}
 
+OUTPUT_LANG = {
+    "tr": "",
+    "en": ("\n\nOUTPUT LANGUAGE: Write the ENTIRE output in clear, simple ENGLISH — headings, tables, explanations, "
+           "questions and answers — even where the instructions above say Turkish. Translate the source's tables "
+           "and figure descriptions into English. Keep units as kg, cm and mL."),
+}
+
 QUESTION_RULES = """SORULAR İÇİN ZORUNLU KURALLAR:
 1. Her soruya konuyu açan, bilgi veren bir cümleyle başla, sonra soruyu sor.
 2. Yaş, ağırlık, boy, yüzde, ilaç dozu ve zaman birimleri dışında kısaltma kullanma.
@@ -368,14 +375,16 @@ class SummaryEngine:
 
     # ------------------------------------------------------------------ çalıştırma
     def run(self, src: Source, prompt: str, topic: str = "",
-            should_stop: Callable[[], bool] | None = None, want_tables: bool | None = None) -> Iterator[str]:
+            should_stop: Callable[[], bool] | None = None, want_tables: bool | None = None,
+            language: str = "tr") -> Iterator[str]:
         """Markdown'u parça parça üretir (akış). Birden çok paket varsa her biri ayrı başlık altında.
 
         Tablo güvencesi: kaynakta "Tablo N" başlıkları varken çıktıda tablo olarak verilmemişlerse, eksik
         tablolar ayrı bir istekle yapılandırılmış (JSON) olarak çıkarılır ve tablo olarak eklenir. Tablo istenen
         şablonlarda çıktıda hiç tablo yoksa özetten özet tabloları üretilir."""
         from .quiz import make_llm
-        instr = prompt.replace("[TOPIC]", topic.strip() or src.title)
+        instr = prompt.replace("[TOPIC]", topic.strip() or src.title) + OUTPUT_LANG.get(language, "")
+        self.language = language
         if want_tables is None:
             want_tables = bool(re.search(r"tablo|table", prompt, re.IGNORECASE))
         multi = len(src.packets) > 1
@@ -486,7 +495,9 @@ class SummaryEngine:
         from .quiz import make_llm
         want = "\n".join(f"- {c}" for _, c in captions)
         llm = make_llm(self.llm_factory, "heavy")
-        data = llm.complete_json(SYSTEM_TABLES, self._parts(src, pk, f"Çıkarılacak tablolar:\n{want}"),
+        lang = (" Hücreleri ve başlıkları İNGİLİZCE yaz (Turkish yerine English)." if getattr(self, "language", "tr") == "en"
+                else "")
+        data = llm.complete_json(SYSTEM_TABLES, self._parts(src, pk, f"Çıkarılacak tablolar:\n{want}{lang}"),
                                  max_tokens=16000, temperature=0.1)
         out = []
         for t in nz.items(data, "tables", "tablolar"):
@@ -509,7 +520,9 @@ class SummaryEngine:
     def summary_tables(self, summary_md: str) -> str:
         from .quiz import make_llm
         llm = make_llm(self.llm_factory, "light")
-        md = llm.complete(SYSTEM_SUMTABLES, [{"role": "user", "content": summary_md[:40000]}], max_tokens=6000,
+        sys_ = SYSTEM_SUMTABLES + ("\nTabloları özetin dilinde (İngilizce özetse İngilizce) yaz."
+                                   if getattr(self, "language", "tr") == "en" else "")
+        md = llm.complete(sys_, [{"role": "user", "content": summary_md[:40000]}], max_tokens=6000,
                           temperature=0.2)
         md = mdfix.normalize_markdown(md)
         return md if mdfix.count_tables(md) else ""

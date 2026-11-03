@@ -169,9 +169,8 @@ class QuizPage(QWidget):
         row2.addWidget(self.cont_cb)
         ll = QLabel("Dil")
         ll.setObjectName("muted")
-        self.lang_cb = QComboBox()
-        self.lang_cb.addItem("Türkçe", "tr")
-        self.lang_cb.addItem("English", "en")
+        from .lang import lang_combo
+        self.lang_cb = lang_combo(self.ctx)
         self.lang_cb.setToolTip("Soruların dili. İngilizce sorularda “🌐 Çevir” ile Türkçesini görebilirsin.")
         row2.addSpacing(10)
         row2.addWidget(ll)

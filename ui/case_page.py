@@ -352,9 +352,8 @@ class CasePage(QWidget):
         row.addWidget(lab)
         row.addWidget(self.level_cb)
         row.addWidget(self.docs_btn)
-        self.lang_cb = QComboBox()
-        self.lang_cb.addItem("Türkçe", "tr")
-        self.lang_cb.addItem("English", "en")
+        from .lang import lang_combo
+        self.lang_cb = lang_combo(self.ctx)
         self.lang_cb.setToolTip("Vakanın dili. İngilizce vakada “🌐 Çevir” ile Türkçesini görebilirsin.")
         row.addWidget(self.lang_cb)
         row.addWidget(self.para_cb)

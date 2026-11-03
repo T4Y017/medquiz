@@ -60,7 +60,8 @@ SYSTEM_CARDS_SRC = SYSTEM_CARDS.replace(
     "İngilizcesini gerekirse parantezde ver). Kaynağın tamamını kapsa, yalnızca ilk sayfalarda kalma.")
 
 
-def cards_from_source(engine, src, llm_factory, n: int = 25, topic: str = "", should_stop=None) -> list[dict]:
+def cards_from_source(engine, src, llm_factory, n: int = 25, topic: str = "", should_stop=None,
+                      language: str = "tr") -> list[dict]:
     """Kaynaktan (PDF sayfaları/metin) doğrudan bilgi kartı. Uzun kaynaklarda her bölümden orantılı sayıda."""
     from .quiz import make_llm
     total_pages = sum(max(1, len(p.pages) or sum(len(m.pages) for m in p.members) or 1) for p in src.packets)
@@ -72,7 +73,8 @@ def cards_from_source(engine, src, llm_factory, n: int = 25, topic: str = "", sh
         share = max(1, len(pk.pages) or sum(len(m.pages) for m in pk.members) or 1)
         k = max(4, round(n * share / total_pages))
         instr = (f"Bu kaynaktan yaklaşık {k} bilgi kartı hazırla."
-                 + (f" Yalnızca şu konuya odaklan: {topic}." if topic.strip() else ""))
+                 + (f" Yalnızca şu konuya odaklan: {topic}." if topic.strip() else "")
+                 + (" LANGUAGE: write every card (front and back) in ENGLISH, not Turkish." if language == "en" else ""))
         llm = make_llm(llm_factory, "heavy")
         data = llm.complete_json(SYSTEM_CARDS_SRC, engine._parts(src, pk, instr), max_tokens=12000, temperature=0.3)
         for c in nz.items(data, "cards", "kartlar", "flashcards", "items"):

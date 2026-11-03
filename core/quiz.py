@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import random
+import re
 from dataclasses import dataclass
 from typing import Callable, Iterator
 
@@ -152,7 +153,10 @@ YALNIZCA şu JSON'u döndür:
  "errors": ["yanlış ifade ve düzeltmesi"], "feedback": "kısa, yapıcı geri bildirim"}"""
 
 SYSTEM_CHAT = """Sen tıp öğrencilerine ve sağlık çalışanlarına yardımcı olan bir çalışma asistanısın.
-Kullanıcının sorusunu ÖNCELİKLE verilen kaynak metinlere dayanarak Türkçe yanıtla.
+Kullanıcının sorusunu ÖNCELİKLE verilen kaynak metinlere dayanarak yanıtla.
+- DİL: Kullanıcı hangi dilde yazdıysa O DİLDE yanıtla (Türkçe soruya Türkçe, İngilizce soruya İngilizce). Kaynaklar
+  başka dilde olsa da bilgiyi kullanıcının diline çevirerek aktar. Tıbbi terimlerin diğer dildeki karşılığını
+  gerektiğinde parantezde ver.
 - Kaynaklardan aldığın bilgiyi [K1], [K2] gibi etiketlerle belirt.
 - Kaynaklarda cevap yoksa bunu açıkça söyle; genel tıp bilgisi eklersen "(kaynak dışı genel bilgi)" diye işaretle.
 - Kısa ve düzenli yaz; Markdown kullan: başlık, madde işareti, **kalın**. Karşılaştırma, sınıflama, doz ya da
@@ -160,6 +164,17 @@ Kullanıcının sorusunu ÖNCELİKLE verilen kaynak metinlere dayanarak Türkçe
 - Kullanıcı seni sınamanı isterse: her mesajda YALNIZCA BİR soru sor, cevabını bekle; gelen cevabı kısaca
   değerlendir (doğru/eksik/yanlış + kısa açıklama), sonra bir sonraki soruya geç. Cevabı soruyla birlikte verme.
 - Bu bir eğitim aracıdır: kişisel teşhis/tedavi isteyenlere bir hekime başvurmalarını hatırlat."""
+
+
+_EN_WORDS = {"the", "what", "which", "how", "is", "are", "of", "and", "in", "for", "with", "does", "why", "when",
+             "treatment", "diagnosis", "explain", "difference", "between", "first", "line"}
+
+
+def _looks_english(text: str) -> bool:
+    if any(ch in text for ch in "çğışöüÇĞİŞÖÜ"):
+        return False
+    words = re.findall(r"[a-zA-Z]+", text.lower())
+    return len(words) >= 3 and sum(w in _EN_WORDS for w in words) >= 2
 
 
 def format_context(chunks: list[dict]) -> tuple[str, dict[str, dict]]:
@@ -633,14 +648,31 @@ class QuizEngine:
 
     # ---------------------------------------------------------------- chat
     def chat_stream(self, question: str, history: list[dict], k: int = 6,
-                    doc_ids: list[int] | None = None, search_query: str | None = None):
+                    doc_ids: list[int] | None = None, search_query: str | None = None, answer_lang: str = "auto"):
         """(metin akışı, kullanılan kaynaklar, istemci) döner; istemcinin `label`'ı cevabı veren modeldir."""
         # Takip sorularında aramayı önceki kullanıcı mesajıyla zenginleştir
         prev_user = [m["content"] for m in history if m["role"] == "user"][-1:]
         query = search_query or " ".join(prev_user + [question])
         hits = self.retriever.search(query, k=k, doc_ids=doc_ids)
+        if _looks_english(question):
+            # İngilizce soru, Türkçe kaynak: anahtar kelime araması dil farkında ıskalar → iki dilli arama ifadesi
+            try:
+                q2 = make_llm(self.llm_factory, "light").complete(
+                    "Convert the user's medical question into a short search query containing the key medical terms "
+                    "BOTH in Turkish and in English. Output only the query words, nothing else.",
+                    [{"role": "user", "content": question}], max_tokens=200, temperature=0).strip()
+            except Exception as e:  # noqa: BLE001
+                log.info("İki dilli arama ifadesi üretilemedi: %s", e)
+                q2 = ""
+            if q2:
+                seen = {h["id"] for h in hits}
+                extra = [h for h in self.retriever.search(q2, k=k, doc_ids=doc_ids) if h["id"] not in seen]
+                hits = (extra + hits)[:k] if len(hits) < 2 else (hits[: k // 2] + extra)[:k]
         context, _ = format_context(hits) if hits else ("(Kütüphanede ilgili kaynak bulunamadı.)", {})
         msgs = [m for m in history[-8:] if m["role"] in ("user", "assistant")]
         msgs.append({"role": "user", "content": f"KAYNAK METİNLER:\n\n{context}\n\n=====\n\nSORU: {question}"})
         llm = make_llm(self.llm_factory, "light")
-        return llm.stream(SYSTEM_CHAT, msgs), hits, llm
+        system = SYSTEM_CHAT + {"tr": "\n- Bu sohbette yanıtı HER ZAMAN TÜRKÇE yaz.",
+                                "en": "\n- In this chat ALWAYS answer in ENGLISH, whatever language the question is in."
+                                }.get(answer_lang, "")
+        return llm.stream(system, msgs), hits, llm
