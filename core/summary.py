@@ -431,6 +431,8 @@ class SummaryEngine:
                 if kind != "length":                 # uzunlukta cümle ortasından devam edilir
                     yield "\n\n"
             self.last_label = getattr(llm, "label", "")
+            if getattr(llm, "fell_back", False):
+                self.table_report["fell_back"] = self.last_label
             fixed = mdfix.normalize_markdown(out)
             n_tables = mdfix.count_tables(fixed)
             self.table_report["source_captions"] += len(pk.captions)

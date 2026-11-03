@@ -616,7 +616,15 @@ class SummaryPage(QWidget):
         sid = self.ctx.db.save_summary(self.current["doc_id"], self.current["title"], self.current["scope"],
                                        self.current["template"], self.current["markdown"], label, self.ctx.profile)
         self.current["id"] = sid
-        self.status.setText("✓ Özet hazır ve kaydedildi." + (f" Not: {' '.join(self.current['notes'])}"
+        fb = (getattr(self.ctx.summary_engine, "table_report", {}) or {}).get("fell_back")
+        if fb:
+            QMessageBox.information(
+                self, "Özet yedek modelle yapıldı",
+                f"Bu özet birincil model yerine yedek modelle ({fb}) hazırlandı. Bunun en sık nedeni, "
+                "Gemini'nin ücretsiz katmanındaki günlük istek sınırının dolmasıdır. Yedek model daha hafif "
+                "olduğu için özet daha kısa ya da eksik olabilir.\n\nAyarlar → “Bugünkü kullanım” satırında "
+                "kotayı görebilirsin; kota her gün yaklaşık 10:00'da yenilenir.")
+        self.status.setText(("⚠ Yedek modelle yapıldı. " if fb else "") + "✓ Özet hazır ve kaydedildi." + (f" Not: {' '.join(self.current['notes'])}"
                                                             if self.current["notes"] else ""))
         self._show(self.current)
         self.refresh_list(select=sid)

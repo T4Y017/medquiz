@@ -277,6 +277,16 @@ def run(pdf: str | None, out: str) -> int:
                 raise RuntimeError(f"Yeterli kart çıkmadı: {cards}")
             return {"cards": len(cards), "sample": [f"{c['front'][:70]} → {c['back'][:40]}" for c in cards[:3]]}
 
+        def source_cards():
+            from .cards import cards_from_source
+            from .summary import SummaryEngine
+            se = SummaryEngine(db, retr2, factory)
+            src = se.build_source(db.list_documents()[0]["id"], "6-7")
+            cards = cards_from_source(se, src, factory, n=8)
+            if len(cards) < 3:
+                raise RuntimeError(f"Kaynaktan yeterli kart çıkmadı: {cards}")
+            return {"cards": len(cards), "sample": [f"{c['front'][:70]} → {c['back'][:40]}" for c in cards[:3]]}
+
         def summary():
             from .summary import TEMPLATES, SummaryEngine
             se = SummaryEngine(db, retr2, factory)
@@ -391,6 +401,7 @@ def run(pdf: str | None, out: str) -> int:
                  (f"{prov}: PDF sayfalarından özet (tablolu)", summary),
                  (f"{prov}: şekilli sorular (kitaptaki görüntülerden)", figure_quiz),
                  (f"{prov}: bilgi kartları (özetten)", flashcards),
+                 (f"{prov}: bilgi kartları (doğrudan kaynaktan)", source_cards),
                          (f"{prov}: İngilizce soru + çeviri + kelime tanımı", english_and_translate),
                          (f"{prov}: tekrar quizi (5 test + 5 eşleştirme) + kısa cevap puanı", review_and_short_answer), (f"{prov}: klasik cevap puanlama", grade),
                          (f"{prov}: vaka üretimi (paraklinik + test)", case),

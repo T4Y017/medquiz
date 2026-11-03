@@ -51,3 +51,36 @@ def card_from_question(q: dict) -> dict:
     if exp:
         back += "\n\n" + (exp if len(exp) < 600 else exp[:600] + "…")
     return {"front": front, "back": back, "topic": q.get("topic", ""), "image": q.get("image", "")}
+
+
+SYSTEM_CARDS_SRC = SYSTEM_CARDS.replace(
+    "Sana verilen ÖZETTEN", "Sana verilen KAYNAKTAN (PDF sayfaları ya da metin)").replace(
+    "Yalnızca özetteki bilgiyi kullan; bilgi uydurma. Özet İngilizceyse kartları da İngilizce yaz.",
+    "Yalnızca kaynaktaki bilgiyi kullan; bilgi uydurma. Kartları Türkçe yaz (kaynak İngilizce olsa bile; terimlerin "
+    "İngilizcesini gerekirse parantezde ver). Kaynağın tamamını kapsa, yalnızca ilk sayfalarda kalma.")
+
+
+def cards_from_source(engine, src, llm_factory, n: int = 25, topic: str = "", should_stop=None) -> list[dict]:
+    """Kaynaktan (PDF sayfaları/metin) doğrudan bilgi kartı. Uzun kaynaklarda her bölümden orantılı sayıda."""
+    from .quiz import make_llm
+    total_pages = sum(max(1, len(p.pages) or sum(len(m.pages) for m in p.members) or 1) for p in src.packets)
+    out: list[dict] = []
+    seen: set[str] = set()
+    for pk in src.packets:
+        if should_stop and should_stop():
+            break
+        share = max(1, len(pk.pages) or sum(len(m.pages) for m in pk.members) or 1)
+        k = max(4, round(n * share / total_pages))
+        instr = (f"Bu kaynaktan yaklaşık {k} bilgi kartı hazırla."
+                 + (f" Yalnızca şu konuya odaklan: {topic}." if topic.strip() else ""))
+        llm = make_llm(llm_factory, "heavy")
+        data = llm.complete_json(SYSTEM_CARDS_SRC, engine._parts(src, pk, instr), max_tokens=12000, temperature=0.3)
+        for c in nz.items(data, "cards", "kartlar", "flashcards", "items"):
+            if not isinstance(c, dict):
+                continue
+            front = nz.text(nz.first(c, "front", "question", "soru", "q"))
+            back = nz.text(nz.first(c, "back", "answer", "cevap", "a"))
+            if front and back and front.lower() not in seen:
+                seen.add(front.lower())
+                out.append({"front": front, "back": back, "topic": nz.text(c.get("topic") or "")})
+    return out

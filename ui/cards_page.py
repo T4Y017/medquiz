@@ -108,6 +108,98 @@ class CardPreviewDialog(QDialog):
         return out
 
 
+class SourceCardsDialog(QDialog):
+    """Kaynaktan kart: kaynak seç (sayfa aralığıyla), isteğe bağlı konu, kart sayısı."""
+
+    def __init__(self, ctx, parent=None):
+        super().__init__(parent)
+        from .flow import FlowLayout
+        from .summary_page import SourceChip, SourcePicker
+        from core.summary import pdf_page_count
+        self.ctx = ctx
+        self._SourceChip, self._SourcePicker, self._ppc = SourceChip, SourcePicker, pdf_page_count
+        self.setWindowTitle("Kaynaktan bilgi kartı")
+        self.resize(720, 420)
+        lay = QVBoxLayout(self)
+        info = QLabel("Kütüphanendeki kitap ya da makaleden doğrudan soru–cevap kartları çıkar. Büyük kitapta sayfa "
+                      "aralığı ya da konu yaz; kaydetmeden önce kartları görüp düzeltebilirsin.")
+        info.setWordWrap(True)
+        lay.addWidget(info)
+        top = QHBoxLayout()
+        top.addWidget(QLabel("<b>Kaynaklar</b>"))
+        top.addStretch()
+        add = QPushButton("＋ Kaynak ekle")
+        add.setObjectName("primary")
+        add.clicked.connect(self.pick)
+        top.addWidget(add)
+        lay.addLayout(top)
+        self.chips_w = QWidget()
+        self.flow = FlowLayout(self.chips_w, spacing=8)
+        lay.addWidget(self.chips_w)
+        self.chips: dict[int, QWidget] = {}
+        f = QFormLayout()
+        self.topic = QLineEdit()
+        self.topic.setPlaceholderText("isteğe bağlı — örn. akut otitis media tedavisi")
+        f.addRow("Konu", self.topic)
+        from PySide6.QtWidgets import QSpinBox
+        self.count = QSpinBox()
+        self.count.setRange(5, 80)
+        self.count.setValue(25)
+        self.count.setSuffix(" kart (yaklaşık)")
+        f.addRow("Kart sayısı", self.count)
+        lay.addLayout(f)
+        lay.addStretch()
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.ok = bb.button(QDialogButtonBox.Ok)
+        self.ok.setText("Kartları oluştur")
+        self.ok.setObjectName("primary")
+        bb.button(QDialogButtonBox.Cancel).setText("Vazgeç")
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+        self._docs = {d["id"]: d for d in ctx.db.list_documents()}
+        last = [x for x in (ctx.settings.extra.get("summary_sources") or []) if x[0] in self._docs]
+        for did, pages in last or [[next(iter(self._docs)), ""]]:
+            self._add(did, pages)
+        self._update()
+
+    def _pc(self, d):
+        return self._ppc(d["source"]) if d["kind"] == "pdf" and __import__("pathlib").Path(d["source"]).exists() else 0
+
+    def _add(self, did, pages=""):
+        d = self._docs.get(did)
+        if not d or did in self.chips:
+            return
+        c = self._SourceChip(d, self._pc(d), pages)
+        c.removed.connect(lambda x=did: self._remove(x))
+        self.chips[did] = c
+        self.flow.addWidget(c)
+        self._update()
+
+    def _remove(self, did):
+        c = self.chips.pop(did, None)
+        if c:
+            self.flow.removeWidget(c)
+            c.deleteLater()
+        self._update()
+
+    def pick(self):
+        dlg = self._SourcePicker(list(self._docs.values()), set(self.chips), self._pc, self)
+        if dlg.exec():
+            chosen = dlg.selected_ids()
+            for did in list(self.chips):
+                if did not in chosen:
+                    self._remove(did)
+            for did in chosen:
+                self._add(did)
+
+    def _update(self):
+        self.ok.setEnabled(bool(self.chips))
+
+    def items(self) -> list[tuple[int, str]]:
+        return [(did, c.pages()) for did, c in self.chips.items()]
+
+
 class CardsPage(QWidget):
     def __init__(self, ctx: AppContext):
         super().__init__()
@@ -157,6 +249,10 @@ class CardsPage(QWidget):
         self.study_btn.setObjectName("primary")
         self.study_btn.setMinimumHeight(40)
         self.study_btn.clicked.connect(lambda: self.start_study(due_only=True))
+        self.src_btn = QPushButton("📚 Kaynaktan kart yap")
+        self.src_btn.setToolTip("Kütüphanedeki kitap/makaleden (istersen belli sayfalar ya da bir konu) doğrudan kart üret")
+        self.src_btn.clicked.connect(self.cards_from_sources)
+        tl.addWidget(self.src_btn)
         tl.addWidget(self.all_btn)
         tl.addWidget(self.study_btn)
         lay.addWidget(top)
@@ -217,7 +313,9 @@ class CardsPage(QWidget):
         rl.addWidget(self.tbl, 1)
         self.empty = QLabel(
             "<h3>Henüz bilgi kartın yok</h3>"
-            "<p>Kart yapmanın iki yolu var:</p><ul>"
+            "<p>Kart yapmanın üç yolu var:</p><ul>"
+            "<li>Yukarıdaki <b>📚 Kaynaktan kart yap</b>: kütüphanendeki kitap ya da makaleyi seç (istersen sayfa "
+            "aralığı ya da konu yaz), yapay zekâ doğrudan kaynaktan kart çıkarsın.</li>"
             "<li><b>Özet</b> sekmesinde bir özet oluştur ya da aç → altındaki <b>🃏 Bilgi kartı yap</b>. "
             "Yapay zekâ özetten tek bilgilik soru–cevap kartları çıkarır; kaydetmeden önce görürsün.</li>"
             "<li><b>Quiz</b>'de bir soruyu cevapladıktan sonra <b>🃏 Karta ekle</b> — özellikle yanlış "
@@ -322,6 +420,67 @@ class CardsPage(QWidget):
         if QMessageBox.question(self, "Desteyi sil", f"“{deck}” destesindeki {n} kart silinsin mi?") == QMessageBox.Yes:
             self.ctx.db.delete_cards([c["id"] for c in self.ctx.db.list_cards(self.ctx.profile, deck)])
             self.ctx.cards_changed.emit()
+
+    def cards_from_sources(self):
+        if not self.ctx.db.list_documents():
+            QMessageBox.information(self, "Kütüphane boş", "Önce Kütüphane sekmesinden kaynak ekle.")
+            return
+        if not self.ctx.settings.has_any_key:
+            QMessageBox.warning(self, "API anahtarı gerekli", "Lütfen önce Ayarlar sekmesinden API anahtarınızı girin.")
+            return
+        dlg = SourceCardsDialog(self.ctx, self)
+        if not dlg.exec():
+            return
+        items, topic, n = dlg.items(), dlg.topic.text().strip(), dlg.count.value()
+        engine = self.ctx.summary_engine
+        try:
+            src = engine.build_multi(items, topic)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, "Kaynak hazırlanamadı", str(e))
+            return
+        from core.cards import cards_from_source
+        factory = engine.llm_factory
+        deck = (topic or src.title)[:80]
+        self.src_btn.setEnabled(False)
+        self.src_btn.setText("Kartlar hazırlanıyor…")
+        self.sum_lbl.setText(f"<b>{src.title}</b> · {src.scope} — kaynaktan kartlar hazırlanıyor "
+                             f"({len(src.packets)} bölüm), birkaç dakika sürebilir…")
+
+        def reset():
+            self.src_btn.setEnabled(True)
+            self.src_btn.setText("📚 Kaynaktan kart yap")
+
+        def done(cards):
+            reset()
+            self.refresh()
+            if not cards:
+                QMessageBox.warning(self, "Bilgi kartı", "Kaynaktan kart çıkarılamadı. Tekrar deneyebilirsin.")
+                return
+            prev = CardPreviewDialog(cards, deck, self)
+            if not prev.exec():
+                return
+            chosen = prev.cards()
+            name = prev.deck.text().strip() or deck
+            added = self.ctx.db.add_cards(chosen, name, f"kaynak: {src.title[:60]}", self.ctx.profile)
+            self.ctx.cards_changed.emit()
+            self._select_deck(name)
+            QMessageBox.information(self, "Bilgi kartları", f"🃏 {added} kart “{name}” destesine eklendi. "
+                                                            "“▶ Bugünkü tekrar” ile hemen çalışabilirsin.")
+
+        def fail(e):
+            reset()
+            self.refresh()
+            QMessageBox.warning(self, "Bilgi kartı", str(e))
+
+        self.ctx.runner.start(lambda p, t: cards_from_source(engine, src, factory, n, topic,
+                                                             should_stop=lambda: t.cancelled),
+                              on_result=done, on_error=fail)
+
+    def _select_deck(self, name: str):
+        for i in range(self.decks.count()):
+            if self.decks.item(i).data(Qt.UserRole) == name:
+                self.decks.setCurrentRow(i)
+                return
 
     # ============================================================ çalışma
     def _build_study(self) -> QWidget:
