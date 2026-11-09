@@ -232,7 +232,7 @@ def pairs(q: dict) -> list[tuple[str, str]]:
 
 # ------------------------------------------------------------------ boşluk doldurma
 BLANK = "____"
-_BLANK_RE = re.compile(r"_{3,}|\[\s*(?:\d+|boşluk|bosluk|blank|___)\s*\]|\(\s*\d+\s*\)_*|…{2,}|\.{5,}",
+_BLANK_RE = re.compile(r"\(\s*\d+\s*\)\s*_{2,}|_{3,}|\[\s*(?:\d+|boşluk|bosluk|blank|___)\s*\]|…{2,}|\.{5,}",
                        re.IGNORECASE)
 
 

@@ -109,6 +109,21 @@ CREATE TABLE IF NOT EXISTS cards (
     reviews INTEGER DEFAULT 0,
     lapses INTEGER DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at REAL NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'istek',
+    area TEXT DEFAULT '',
+    text TEXT NOT NULL,
+    diag TEXT DEFAULT '',
+    marker TEXT NOT NULL,
+    sent_at REAL,
+    issue_no INTEGER,
+    state TEXT DEFAULT '',
+    reply TEXT DEFAULT '',
+    checked_at REAL,
+    profile TEXT DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS cases (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at REAL NOT NULL,
@@ -146,7 +161,7 @@ class Database:
 
     # Bilgisayarlar arası eşitleme için: her satıra küresel kimlik (uid), değişiklik zamanı (mtime) ve
     # silinenler için iz (tombstone). Tetikleyiciler sayesinde mevcut kodun değişmesi gerekmez.
-    SYNC_TABLES = ("documents", "questions", "vocab", "summaries", "chats", "cases", "cards")
+    SYNC_TABLES = ("documents", "questions", "vocab", "summaries", "chats", "cases", "cards", "feedback")
 
     def _migrate_sync(self) -> None:
         c = self.conn
@@ -463,6 +478,32 @@ BEGIN INSERT OR REPLACE INTO tombstones(uid, tbl, at) VALUES (OLD.uid, '{t}', {n
     # ---------------------------------------------------------------- vocab
     # Leitner kutuları: kutu n'de doğru bilinen kelime INTERVALS[n] gün sonra tekrar sorulur
     VOCAB_INTERVALS = [1, 3, 7, 16, 35, 90]
+
+    # ------------------------------------------------------------ geri bildirim
+    def add_feedback(self, kind: str, area: str, text: str, diag: str, marker: str, profile: str = "") -> int:
+        with self._lock:
+            cur = self.conn.execute("INSERT INTO feedback(created_at, kind, area, text, diag, marker, profile) "
+                                    "VALUES (?,?,?,?,?,?,?)", (time.time(), kind, area, text, diag, marker, profile))
+            self.conn.commit()
+            return cur.lastrowid
+
+    def list_feedback(self) -> list[dict]:
+        with self._lock:
+            return [dict(r) for r in self.conn.execute("SELECT * FROM feedback ORDER BY created_at DESC").fetchall()]
+
+    def update_feedback(self, fid: int, **fields) -> None:
+        ok = {k: v for k, v in fields.items() if k in ("sent_at", "issue_no", "state", "reply", "checked_at", "text")}
+        if not ok:
+            return
+        with self._lock:
+            self.conn.execute(f"UPDATE feedback SET {', '.join(k + ' = ?' for k in ok)} WHERE id = ?",
+                              list(ok.values()) + [fid])
+            self.conn.commit()
+
+    def delete_feedback(self, fid: int) -> None:
+        with self._lock:
+            self.conn.execute("DELETE FROM feedback WHERE id = ?", (fid,))
+            self.conn.commit()
 
     # ------------------------------------------------------------ bilgi kartları
     CARD_INTERVALS = [1, 3, 7, 16, 35, 90]

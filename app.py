@@ -33,14 +33,16 @@ from ui.settings_page import SettingsPage  # noqa: E402
 from ui.stats_page import StatsPage  # noqa: E402
 from ui.summary_page import SummaryPage  # noqa: E402
 from ui.cards_page import CardsPage  # noqa: E402
+from ui.feedback_page import FeedbackPage  # noqa: E402
 from ui.vocab_page import VocabPage  # noqa: E402
 
 from core.version import __version__ as VERSION  # noqa: E402
 
 
 class MainWindow(QMainWindow):
-    PAGES = ("Quiz", "Vaka", "Özet", "Kartlar", "Sohbet", "Kütüphane", "Kelimeler", "İstatistik", "Ayarlar")
-    SETTINGS_ROW = 8
+    PAGES = ("Quiz", "Vaka", "Özet", "Kartlar", "Sohbet", "Kütüphane", "Kelimeler", "İstatistik", "Geri bildirim",
+             "Ayarlar")
+    SETTINGS_ROW = 9
     LIBRARY_ROW = 5
     EXPANDED_W, COLLAPSED_W = 220, 64
     def __init__(self, ctx: AppContext):
@@ -122,6 +124,7 @@ class MainWindow(QMainWindow):
         self.case = CasePage(ctx)
         self.summary = SummaryPage(ctx)
         self.cards = CardsPage(ctx)
+        self.feedback = FeedbackPage(ctx)
         self.chat = ChatPage(ctx)
         self.library = LibraryPage(ctx)
         self.stats = StatsPage(ctx)
@@ -133,6 +136,7 @@ class MainWindow(QMainWindow):
                                  ("💬", "Sohbet", self.chat),
                                  ("📚", "Kütüphane", self.library), ("📘", "Kelimeler", self.vocab),
                                  ("📊", "İstatistik", self.stats),
+                                 ("💬", "Geri bildirim", self.feedback),
                                  ("⚙", "Ayarlar", self.settings)):
             it = QListWidgetItem(f"{icon}   {name}")
             it.setToolTip(name)
@@ -147,6 +151,8 @@ class MainWindow(QMainWindow):
         self.stats.quiz_requested.connect(self._quiz_from_topic)
         self.summary.cards_made.connect(lambda: self.go("Kartlar"))
         ctx.cards_changed.connect(self._nav_counts)
+        ctx.feedback_news.connect(self._feedback_news)
+        QTimer.singleShot(8000, lambda: self.feedback.check(silent=True))
         ctx.data_synced.connect(self._nav_counts)
         ctx.profile_changed.connect(lambda _: self._nav_counts())
         self.collapsed = False
@@ -185,6 +191,12 @@ class MainWindow(QMainWindow):
             n = self.ctx.db.due_card_count(self.ctx.profile)
             return f"  ({n})" if n else ""
         return ""
+
+    def _feedback_news(self, n: int):
+        self.statusBar().show()
+        self.statusBar().showMessage(f"💬 Geri bildirimlerinden {n} tanesinde yeni durum/cevap var — "
+                                     "“Geri bildirim” sekmesine bak.")
+        self._sb_timer.start(20000)
 
     def _nav_counts(self):
         for it, icon, name in self._nav_items:

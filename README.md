@@ -43,6 +43,14 @@ Kısayollar: **A–E** veya **1–5** şık seçer, **Enter** sonraki soruya ge�
 
 ---
 
+## Geri bildirim → otomatik düzeltme
+
+Uygulamadaki **💬 Geri bildirim** sekmesinden şikayet ya da istek yazılır; “Kaydet ve gönder” tarayıcıda bu depoda
+`geri-bildirim` etiketli bir konu (issue) açar. Zamanlanmış bir Claude oturumu günde iki kez depo sahibinin açtığı
+bu konuları okur, değişikliği yapar, `tests/smoke_test.py` ve CI testlerinden geçirip yeni sürümü yayınlar, konuya
+Türkçe bir açıklama yazıp kapatır. Uygulama kendini günceller; durum ve cevap sekmede görünür. Başka kullanıcıların
+açtığı konular otomatik işlenmez.
+
 ## Hesap: aynı kullanıcıyı başka bilgisayarda kullanmak
 
 Ayarlar → **Hesap** → **Google ile giriş yap**. Tarayıcıda Google hesabını seçersin; MedQuiz verilerini

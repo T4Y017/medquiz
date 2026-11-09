@@ -51,6 +51,16 @@ jobs:
             Write-Host "::notice::Google ile giriş etkin (istemci: $($env:GID.Substring(0,12))…)"
           } else { Write-Host "::warning::Google ile giriş kapalı: GOOGLE_CLIENT_ID sırrı yok" }
 
+      - name: Smoke test (taklit yapay zekâ, tüm ekranlar)
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: "1"
+        run: |
+          pip install reportlab
+          python tests/smoke_test.py
+
       - name: Build app
         run: pyinstaller --noconfirm --clean medquiz.spec
 
