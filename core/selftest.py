@@ -198,6 +198,22 @@ def run(pdf: str | None, out: str) -> int:
 
     _step(results, "Google ile giriş hazırlığı", google_ready, required=False)
 
+    def feedback_ready():
+        """Geri bildirim doğrudan gönderim anahtarı derlemede var ve GitHub'da geçerli mi (konu AÇMADAN denenir)."""
+        from . import feedback
+        tok = feedback.app_token()
+        if not tok:
+            raise RuntimeError("Geri bildirim anahtarı bu derlemede yok (FEEDBACK_TOKEN sırrı eksik)")
+        import requests
+        r = requests.get(f"https://api.github.com/repos/{feedback.UPDATE_REPO}/issues", params={"per_page": 1},
+                         headers={"Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json"},
+                         timeout=20)
+        if r.status_code in (401, 403):
+            raise RuntimeError(f"Geri bildirim anahtarı GitHub'da geçersiz ({r.status_code})")
+        return {"feedback_direct": True, "github_status": r.status_code}
+
+    _step(results, "Geri bildirim doğrudan gönderim anahtarı", feedback_ready, required=False)
+
     def update_check():
         from . import updater
         real = updater.__version__
