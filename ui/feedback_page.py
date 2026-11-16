@@ -95,7 +95,9 @@ class FeedbackPage(QWidget):
         r2.addWidget(save)
         r2.addWidget(send)
         cl.addLayout(r2)
-        note = QLabel("Gönder'e basınca tarayıcıda GitHub açılır; yazdıkların hazır gelir, yalnızca yeşil "
+        note = QLabel("Gönder'e basınca kayıt doğrudan geliştiriciye gider; hesap ya da giriş gerekmez. Kayıtlar "
+                      "herkese açık bir sayfada tutulur; kişisel bilgi yazma." if fb.can_send_directly() else
+                      "Gönder'e basınca tarayıcıda GitHub açılır; yazdıkların hazır gelir, yalnızca yeşil "
                       "<b>Create / Submit</b> düğmesine basarsın. Geliştirici deposu herkese açıktır; kişisel bilgi "
                       "yazma.")
         note.setObjectName("muted")
@@ -214,8 +216,11 @@ class FeedbackPage(QWidget):
                          f"font-size:small'>{html.escape(f['diag']).replace(chr(10), '<br>')}</span></p>")
         self.detail.setHtml("".join(parts))
         sent = bool(f.get("sent_at"))
-        self.send_btn.setText("Yeniden gönder" if sent else "GitHub'a gönder")
-        self.mark_btn.setVisible(not sent)
+        direct = fb.can_send_directly()
+        self.send_btn.setText(("Yeniden gönder" if sent else "Gönder") if direct else
+                              ("Yeniden gönder" if sent else "GitHub'a gönder"))
+        self.send_btn.setVisible(not (direct and f.get("issue_no")))
+        self.mark_btn.setVisible(not sent and not direct)
         self.open_btn.setVisible(bool(f.get("issue_no")))
 
     # ------------------------------------------------------------------
@@ -236,6 +241,9 @@ class FeedbackPage(QWidget):
         f = self._sel()
         if not f:
             return
+        if fb.can_send_directly():
+            self._send_direct(f)
+            return
         url = fb.new_issue_url(f["kind"], f["area"], f["text"], f["diag"], f["marker"])
         QDesktopServices.openUrl(QUrl(url))
         self.ctx.db.update_feedback(f["id"], sent_at=time.time())
@@ -245,6 +253,25 @@ class FeedbackPage(QWidget):
             "Tarayıcıda GitHub açıldı. Metin hazır; yeşil <b>Create</b> (ya da <b>Submit new issue</b>) düğmesine bas.\n\n"
             "GitHub hesabın yoksa: “Metni kopyala” ile kopyalayıp geliştiriciye gönderebilirsin.".replace("<b>", "")
             .replace("</b>", ""))
+
+    def _send_direct(self, f: dict):
+        self.send_btn.setEnabled(False)
+        self.send_btn.setText("Gönderiliyor…")
+
+        def done(no):
+            self.ctx.db.update_feedback(f["id"], sent_at=time.time(), issue_no=no, state="open",
+                                        checked_at=time.time())
+            self.refresh(select=f["id"])
+            QMessageBox.information(self, "Geri bildirim", f"Gönderildi (kayıt #{no}). Cevap ve durum burada "
+                                                           "görünecek; düzeltme yapılınca uygulama güncellenir.")
+
+        def fail(e):
+            self.refresh(select=f["id"])
+            QMessageBox.warning(self, "Gönderilemedi", f"{e}\n\nKaydın saklandı; internet gelince “Gönder”e "
+                                                       "yeniden basabilirsin.")
+
+        self.ctx.runner.start(lambda p, t: fb.send_issue(f["kind"], f["area"], f["text"], f["diag"], f["marker"]),
+                              on_result=done, on_error=fail)
 
     def mark_sent(self):
         f = self._sel()

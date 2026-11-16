@@ -144,18 +144,22 @@ class SourcePicker(QDialog):
             it = QListWidgetItem(f"{d['title']}\n{kind}" + (f" · {n} sayfa" if n else "")
                                  + (f" · eklendi {when}" if when else ""))
             it.setData(Qt.UserRole, d["id"])
-            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            # Onay kutusunu Qt değil biz değiştiriyoruz: satırın neresine tıklanırsa tıklansın tek ve kesin geçiş
+            it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
             it.setCheckState(Qt.Checked if d["id"] in selected else Qt.Unchecked)
             self.list.addItem(it)
         self.list.itemClicked.connect(self._toggle)
-        self.list.itemChanged.connect(lambda _: self._count())
+        self.list.itemActivated.connect(self._toggle)
         lay.addWidget(self.list, 1)
         row = QHBoxLayout()
         self.count_lbl = QLabel("")
         self.count_lbl.setObjectName("muted")
         row.addWidget(self.count_lbl, 1)
+        allb = QPushButton("Görünenlerin hepsi")
+        allb.clicked.connect(lambda: self._set_all(Qt.Checked))
         none = QPushButton("Hiçbiri")
         none.clicked.connect(lambda: self._set_all(Qt.Unchecked))
+        row.addWidget(allb)
         row.addWidget(none)
         lay.addLayout(row)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -169,10 +173,8 @@ class SourcePicker(QDialog):
         self.search.setFocus()
 
     def _toggle(self, it: QListWidgetItem):
-        # onay kutusuna değil satıra tıklanınca da seç/bırak (kutuya tıklamada Qt zaten değiştirir)
-        pos = self.list.viewport().mapFromGlobal(self.cursor().pos())
-        if pos.x() > 28:
-            it.setCheckState(Qt.Unchecked if it.checkState() == Qt.Checked else Qt.Checked)
+        it.setCheckState(Qt.Unchecked if it.checkState() == Qt.Checked else Qt.Checked)
+        self._count()
 
     def _filter(self, text: str):
         t = text.strip().lower()
@@ -182,7 +184,9 @@ class SourcePicker(QDialog):
 
     def _set_all(self, state):
         for i in range(self.list.count()):
-            self.list.item(i).setCheckState(state)
+            if not self.list.item(i).isHidden():
+                self.list.item(i).setCheckState(state)
+        self._count()
 
     def _count(self):
         n = len(self.selected_ids())

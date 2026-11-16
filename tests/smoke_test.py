@@ -43,6 +43,10 @@ class Fake:
 
     def complete_json(self, system, user, **k):
         text = user if isinstance(user, str) else " ".join(p.get("text", "") for p in user if p["type"] == "text")
+        if "ŞEKİLLİ bilgi kartı" in system:
+            n = sum(1 for p in user if p["type"] == "image")
+            return {"cards": [{"figure": i + 1, "usable": True, "front": "Bu görüntüdeki bulgu nedir?",
+                               "back": "ST yükselmesi"} for i in range(n)]}
         if "bilgi kartı" in system:
             return {"cards": [{"front": "Allerjik rinitte ilk basamak?", "back": "İntranazal steroid"},
                               {"front": "DKA'da pH eşiği?", "back": "< 7,30"}]}
@@ -78,6 +82,10 @@ class Fake:
         return {"questions": qs}
 
     def complete(self, system, msgs, **k):
+        if "OCR" in system:
+            pages = [p["text"].split()[1].rstrip(":") for p in msgs[-1]["content"]
+                     if p["type"] == "text" and p["text"].startswith("Sayfa ")]
+            return "\n".join(f"=== SAYFA {n} ===\nDiyabetik ketoasidoz tedavisi: sıvı ve insülin." for n in pages)
         return "**Özet tablosu: x**\n\n| a | b |\n|---|---|\n| 1 | 2 |"
 
     def stream(self, system, messages, **k):
@@ -180,6 +188,28 @@ def main() -> int:
         check("eşitleme", sb.gemini_api_key == "test" and len(b.list_documents()) == 1
               and len(b.list_cards(ctx.profile)) >= 2)
     step(sync_test)
+
+    def ocr_and_figure_cards():
+        import pypdfium2 as pdfium
+        from core.cards import figure_cards
+        from core.ingest import NeedsOCR, apply_ocr, load_any
+        from core.ocr import ocr_doc
+        pdf = pdfium.PdfDocument(str(BOOK))
+        imgs = [pdf[i].render(scale=1.2).to_pil().convert("RGB") for i in (5, 6)]
+        pdf.close()
+        scanned = TMP / "scanned.pdf"
+        imgs[0].save(scanned, save_all=True, append_images=imgs[1:])
+        try:
+            load_any(str(scanned))
+            check("taranmış PDF algılandı", False)
+            return
+        except NeedsOCR as e:
+            doc = apply_ocr(e.doc, ocr_doc(e.doc, fac))
+        check("taranmış PDF metne çevrildi", len(doc.sections) == 2 and "ketoasidoz" in doc.sections[0][1])
+        src = ctx.summary_engine.build_source(ctx.db.list_documents()[0]["id"], "8-9")
+        cards = figure_cards(ctx.summary_engine, src, fac, n=2)
+        check("şekilli kart", len(cards) >= 1 and bool(cards[0].get("image")))
+    step(ocr_and_figure_cards)
     QTimer.singleShot(300, run)
     qa.exec()
     print("\n".join(LOG))

@@ -206,6 +206,21 @@ class SettingsPage(QWidget):
         self.content_lang = lang_combo(ctx, tooltip="Quiz, vaka, özet ve bilgi kartlarında varsayılan dil. Her ekranda "
                                                     "ayrıca değiştirebilirsin; sohbet sorduğun dilde cevap verir.")
         f2.addRow("Varsayılan içerik dili", self.content_lang)
+        self.summary_mode = QComboBox()
+        for k, v in (("auto", "Otomatik — ücretli anahtar varsa göster"), ("on", "Her zaman göster"),
+                     ("off", "Gizle")):
+            self.summary_mode.addItem(v, k)
+        self.summary_mode.setCurrentIndex(max(0, self.summary_mode.findData(ctx.settings.extra.get("summary_mode",
+                                                                                                    "auto"))))
+        self.summary_mode.setToolTip("Uzun kaynak özetleri güçlü bir model ister. Ücretsiz Gemini ile sonuçlar zayıf "
+                                     "kaldığı için Özet sekmesi yalnızca Claude/OpenAI anahtarı ya da ücretli Gemini "
+                                     "varken görünür (Otomatik).")
+        f2.addRow("Özet sekmesi", self.summary_mode)
+        self.gemini_paid = QCheckBox("Gemini'de faturalandırma açık (ücretli katman)")
+        self.gemini_paid.setChecked(bool(ctx.settings.extra.get("gemini_paid")))
+        self.gemini_paid.setToolTip("Google projesinde faturalandırmayı açtıysan işaretle: günlük sınır kalkar, Özet "
+                                    "sekmesi otomatik görünür.")
+        f2.addRow("", self.gemini_paid)
         self.font = QSpinBox()
         self.font.setRange(9, 18)
         self.font.setValue(s.font_size)
@@ -333,6 +348,8 @@ class SettingsPage(QWidget):
         s.use_embeddings = self.emb.isChecked()
         s.font_size = self.font.value()
         s.extra["content_lang"] = self.content_lang.currentData()
+        s.extra["summary_mode"] = self.summary_mode.currentData()
+        s.extra["gemini_paid"] = self.gemini_paid.isChecked()
         s.auto_update = self.auto_upd.isChecked()
         s.gemini_save_quota = self.save_quota.isChecked()
         if not s.key_for(s.provider) and s.has_any_key:

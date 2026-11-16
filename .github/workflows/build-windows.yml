@@ -51,6 +51,16 @@ jobs:
             Write-Host "::notice::Google ile giriş etkin (istemci: $($env:GID.Substring(0,12))…)"
           } else { Write-Host "::warning::Google ile giriş kapalı: GOOGLE_CLIENT_ID sırrı yok" }
 
+      - name: Feedback token (from secrets)
+        shell: pwsh
+        env:
+          FT: ${{ secrets.FEEDBACK_TOKEN }}
+        run: |
+          if ($env:FT) {
+            "TOKEN = `"$($env:FT)`"" | Set-Content core/feedback_token.py -Encoding utf8
+            Write-Host "::notice::Geri bildirim doğrudan gönderimi etkin"
+          } else { Write-Host "::warning::Geri bildirim doğrudan gönderimi kapalı: FEEDBACK_TOKEN sırrı yok" }
+
       - name: Smoke test (taklit yapay zekâ, tüm ekranlar)
         shell: pwsh
         env:

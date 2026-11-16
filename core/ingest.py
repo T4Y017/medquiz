@@ -10,7 +10,8 @@ from typing import Callable
 log = logging.getLogger(__name__)
 Progress = Callable[[int, int], None] | None
 
-SUPPORTED_EXT = {".pdf", ".docx", ".txt", ".md", ".markdown"}
+SUPPORTED_EXT = {".pdf", ".docx", ".txt", ".md", ".markdown", ".pptx", ".jpg", ".jpeg", ".png", ".webp"}
+IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 
 CHUNK_SIZE = 1200      # karakter
 CHUNK_OVERLAP = 200    # karakter
@@ -23,10 +24,20 @@ class LoadedDoc:
     kind: str
     sections: list[tuple[str, str]]  # (konum etiketi, metin)
     warnings: list[str] = field(default_factory=list)
+    empty_pages: list[int] = field(default_factory=list)   # metni çıkmayan (taranmış) sayfalar
+    n_pages: int = 0
 
 
 class IngestError(Exception):
     pass
+
+
+class NeedsOCR(IngestError):
+    """Metni olmayan (taranmış) PDF ya da sayfa fotoğrafı: yapay zekâyla metne çevrilebilir."""
+
+    def __init__(self, msg: str, doc: "LoadedDoc"):
+        super().__init__(msg)
+        self.doc = doc
 
 
 # ---------------------------------------------------------------- loaders
@@ -90,10 +101,12 @@ def load_pdf(path: Path, progress: Progress = None) -> LoadedDoc:
     for reader in readers:
         sections, empty, n_pages = [], 0, 0
         try:
+            empty_pages: list[int] = []
             for i, n, txt, t in reader(path, progress):
                 n_pages, title = n, t or title
                 if len(txt.strip()) < 20:
                     empty += 1
+                    empty_pages.append(i)
                     continue
                 sections.append((f"s. {i}", txt))
             last_err = None
@@ -106,18 +119,20 @@ def load_pdf(path: Path, progress: Progress = None) -> LoadedDoc:
         if "password" in msg or "encrypt" in msg:
             raise IngestError("PDF şifreli, açılamadı.") from last_err
         raise IngestError(f"PDF açılamadı: {last_err}") from last_err
-    if not sections:
-        raise IngestError(
-            "PDF'ten metin çıkarılamadı. Taranmış (resim) bir PDF olabilir; "
-            "önce OCR ile metne çevirmeniz gerekir."
-        )
+    if str(title).strip().lower().strip("()") in ("", "untitled", "anonymous", "microsoft word", "document",
+                                                  "başlıksız", "adsız") or len(str(title)) < 3:
+        title = path.stem
+    if not sections or (n_pages and empty / n_pages > 0.5):
+        doc = LoadedDoc(title=str(title).strip(), source=str(path), kind="pdf", sections=sections,
+                        empty_pages=empty_pages, n_pages=n_pages)
+        raise NeedsOCR(f"{n_pages} sayfanın {empty} tanesi taranmış (resim) görünüyor; metin çıkmadı.", doc)
     warnings = []
     if n_pages and empty / n_pages > 0.3:
         warnings.append(f"{n_pages} sayfanın {empty} tanesinde metin bulunamadı (taranmış sayfalar olabilir); "
                         "bu sayfalardan soru üretilemez.")
     sample = " ".join(t for _, t in sections[:: max(1, len(sections) // 20)])[:20000]
     if sample:
-        nonspace = [c for c in sample if not c.isspace()]
+        nonspace = [c for c in sample if not c.isspace() and not c.isdigit() and c not in ".,-_·…|:;()"]
         letters = sum(c.isalpha() for c in nonspace) / max(1, len(nonspace))
         if letters < 0.6:
             warnings.append("Metin çıkarımı bozuk görünüyor (çok sayıda anlamsız karakter). Kitap düzgün okunmamış "
@@ -125,7 +140,8 @@ def load_pdf(path: Path, progress: Progress = None) -> LoadedDoc:
     if str(title).strip().lower().strip("()") in ("", "untitled", "anonymous", "microsoft word", "document",
                                                   "başlıksız", "adsız") or len(str(title)) < 3:
         title = path.stem
-    return LoadedDoc(title=str(title).strip(), source=str(path), kind="pdf", sections=sections, warnings=warnings)
+    return LoadedDoc(title=str(title).strip(), source=str(path), kind="pdf", sections=sections, warnings=warnings,
+                     empty_pages=empty_pages, n_pages=n_pages)
 
 
 def load_docx(path: Path) -> LoadedDoc:
@@ -241,6 +257,52 @@ def load_url(url: str, timeout: int = 25) -> LoadedDoc:
     return LoadedDoc(title=title, source=url, kind="web", sections=sections)
 
 
+def load_pptx(path: Path) -> LoadedDoc:
+    try:
+        from pptx import Presentation
+    except ImportError as e:
+        raise IngestError("PowerPoint desteği bu sürümde yok.") from e
+    try:
+        prs = Presentation(str(path))
+    except Exception as e:  # noqa: BLE001
+        raise IngestError(f"PowerPoint dosyası açılamadı: {e}") from e
+    sections = []
+    for i, slide in enumerate(prs.slides, 1):
+        texts = []
+        for shp in slide.shapes:
+            if getattr(shp, "has_text_frame", False) and shp.text_frame.text.strip():
+                texts.append(shp.text_frame.text.strip())
+            if getattr(shp, "has_table", False):
+                for row in shp.table.rows:
+                    texts.append(" | ".join(c.text.strip() for c in row.cells))
+        if slide.has_notes_slide and slide.notes_slide.notes_text_frame.text.strip():
+            texts.append("Notlar: " + slide.notes_slide.notes_text_frame.text.strip())
+        if texts:
+            sections.append((f"slayt {i}", "\n".join(texts)))
+    if not sections:
+        raise IngestError("Sunumda metin bulunamadı.")
+    return LoadedDoc(title=path.stem, source=str(path), kind="pptx", sections=sections)
+
+
+def apply_ocr(doc: LoadedDoc, texts: dict[int, str]) -> LoadedDoc:
+    """OCR sonuçlarını belgeye ekler (sayfa sırasıyla)."""
+    have = {lab: t for lab, t in doc.sections}
+    for n, t in texts.items():
+        if len(t.strip()) >= 20:
+            have[f"s. {n}"] = t
+    def key(lab):
+        m = re.search(r"\d+", lab)
+        return int(m.group()) if m else 0
+    doc.sections = sorted(have.items(), key=lambda kv: key(kv[0]))
+    left = [p for p in doc.empty_pages if p not in texts]
+    doc.warnings = [w for w in doc.warnings if "taranmış" not in w]
+    if left:
+        doc.warnings.append(f"{len(left)} sayfa okunamadı (boş ya da çok bulanık olabilir).")
+    if doc.kind == "image":
+        doc.sections = [("", t) for _, t in doc.sections]
+    return doc
+
+
 def load_any(source: str, progress: Progress = None) -> LoadedDoc:
     if re.match(r"^(https?://|www\.)", source.strip(), re.I):
         return load_url(source.strip())
@@ -254,6 +316,12 @@ def load_any(source: str, progress: Progress = None) -> LoadedDoc:
         return load_docx(path)
     if ext in (".txt", ".md", ".markdown"):
         return load_text(path)
+    if ext == ".pptx":
+        return load_pptx(path)
+    if ext in IMAGE_EXT:
+        raise NeedsOCR("Fotoğraf/görüntü dosyası: metni yapay zekâyla okunabilir.",
+                       LoadedDoc(title=path.stem, source=str(path), kind="image", sections=[], empty_pages=[1],
+                                 n_pages=1))
     if ext == ".doc":
         raise IngestError("Eski .doc biçimi desteklenmiyor; Word'de 'Farklı Kaydet → .docx' yapın.")
     raise IngestError(f"Desteklenmeyen dosya türü: {ext}")

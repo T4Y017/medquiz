@@ -85,9 +85,15 @@ class CardPreviewDialog(QDialog):
             a.setFlags(a.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEditable)
             a.setCheckState(Qt.Checked)
             a.setData(Qt.UserRole, c)
+            if c.get("image"):
+                pm = QPixmap()
+                pm.loadFromData(base64.b64decode(c["image"]))
+                from PySide6.QtGui import QIcon
+                a.setIcon(QIcon(pm.scaled(96, 96, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
             b = QTableWidgetItem(c["back"])
             self.tbl.setItem(r, 0, a)
             self.tbl.setItem(r, 1, b)
+        self.tbl.setIconSize(__import__("PySide6.QtCore", fromlist=["QSize"]).QSize(96, 96))
         self.tbl.resizeRowsToContents()
         lay.addWidget(self.tbl, 1)
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
@@ -147,6 +153,13 @@ class SourceCardsDialog(QDialog):
         self.count.setValue(25)
         self.count.setSuffix(" kart (yaklaşık)")
         f.addRow("Kart sayısı", self.count)
+        self.n_img = QSpinBox()
+        self.n_img.setRange(0, 15)
+        self.n_img.setValue(int(ctx.settings.extra.get("card_images", 3)))
+        self.n_img.setSuffix(" şekilli kart")
+        self.n_img.setToolTip("Kitaptaki görüntülerden (röntgen, EKG, histoloji, klinik fotoğraf…) ön yüzünde resim olan "
+                              "kartlar. Yalnızca PDF kaynaklarda; 0 = istemiyorum.")
+        f.addRow("Şekilli kart", self.n_img)
         from .lang import lang_combo
         self.lang = lang_combo(ctx)
         f.addRow("Kartların dili", self.lang)
@@ -436,6 +449,8 @@ class CardsPage(QWidget):
             return
         items, topic, n = dlg.items(), dlg.topic.text().strip(), dlg.count.value()
         lang = dlg.lang.currentData()
+        n_img = dlg.n_img.value()
+        self.ctx.settings.extra["card_images"] = n_img
         engine = self.ctx.summary_engine
         try:
             src = engine.build_multi(items, topic)
@@ -477,7 +492,8 @@ class CardsPage(QWidget):
             QMessageBox.warning(self, "Bilgi kartı", str(e))
 
         self.ctx.runner.start(lambda p, t: cards_from_source(engine, src, factory, n, topic,
-                                                             should_stop=lambda: t.cancelled, language=lang),
+                                                             should_stop=lambda: t.cancelled, language=lang,
+                                                             n_images=n_img),
                               on_result=done, on_error=fail)
 
     def _select_deck(self, name: str):

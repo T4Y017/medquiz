@@ -27,6 +27,44 @@ _PATH = re.compile(r"[A-Za-z]:\\\\?[^\s\"']+|/(?:home|Users)/[^\s\"']+")
 MAX_URL = 7000
 
 
+def app_token() -> str:
+    import os
+    tok = os.environ.get("MEDQUIZ_FEEDBACK_TOKEN", "")
+    if not tok:
+        try:
+            from . import feedback_token
+            tok = feedback_token.TOKEN
+        except ImportError:
+            tok = ""
+    return tok.strip()
+
+
+def can_send_directly() -> bool:
+    return bool(app_token())
+
+
+def send_issue(kind: str, area: str, text: str, diag: str, marker: str, timeout: float = 20) -> int:
+    """Uygulamanın kendisi konu açar (kullanıcının GitHub'a girmesi gerekmez). Konu numarasını döndürür."""
+    tok = app_token()
+    if not tok:
+        raise RuntimeError("Bu sürümde doğrudan gönderim etkin değil.")
+    body = issue_body(kind, area, text, diag, marker)
+    try:
+        r = requests.post(f"https://api.github.com/repos/{UPDATE_REPO}/issues",
+                          headers={"Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json",
+                                   "X-GitHub-Api-Version": "2022-11-28"},
+                          json={"title": issue_title(kind, area, text), "body": body, "labels": [LABEL, "uygulamadan"]},
+                          timeout=timeout)
+    except requests.RequestException as e:
+        raise RuntimeError(f"Gönderilemedi (internet bağlantısı?): {type(e).__name__}") from e
+    if r.status_code == 201:
+        return int(r.json()["number"])
+    if r.status_code in (401, 403):
+        raise RuntimeError("Gönderim anahtarı geçersiz ya da süresi dolmuş; geliştiriciye haber ver. "
+                           "Şimdilik 'Metni kopyala' ile gönderebilirsin.")
+    raise RuntimeError(f"GitHub gönderimi kabul etmedi ({r.status_code}).")
+
+
 def new_marker() -> str:
     return uuid.uuid4().hex[:12]
 

@@ -27,6 +27,11 @@ except ImportError:
 
 hiddenimports += collect_submodules("anthropic") + collect_submodules("openai")
 datas += collect_data_files("docx")
+try:
+    datas += collect_data_files("pptx")
+    hiddenimports += collect_submodules("pptx")
+except Exception:  # noqa: BLE001
+    pass
 
 EXCLUDES = [
     "tkinter", "matplotlib", "pandas", "scipy", "IPython", "pytest", "torch", "tensorflow",

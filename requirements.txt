@@ -10,3 +10,4 @@ fastembed>=0.4
 pypdfium2>=4.30
 cryptography>=41
 pillow>=10
+python-pptx>=0.6

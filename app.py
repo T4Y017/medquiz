@@ -155,9 +155,12 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(8000, lambda: self.feedback.check(silent=True))
         ctx.data_synced.connect(self._nav_counts)
         ctx.profile_changed.connect(lambda _: self._nav_counts())
+        self._apply_summary_visibility()
         self.collapsed = False
         self.set_collapsed(bool(ctx.settings.extra.get("sidebar_collapsed")), save=False)
         ctx.settings_changed.connect(self._apply_style)
+        ctx.settings_changed.connect(self._apply_summary_visibility)
+        ctx.data_synced.connect(self._apply_summary_visibility)
         self.statusBar().setStyleSheet("QStatusBar{background:#ecfdf5; color:#065f46; border-top:1px solid #a7f3d0;}")
         self.statusBar().hide()
         self._sb_timer = QTimer(self)
@@ -185,6 +188,20 @@ class MainWindow(QMainWindow):
             self.nav.setCurrentRow(self.LIBRARY_ROW)
         else:
             self.nav.setCurrentRow(0)
+
+    def summary_enabled(self) -> bool:
+        s = self.ctx.settings
+        mode = s.extra.get("summary_mode", "auto")
+        if mode in ("on", "off"):
+            return mode == "on"
+        return bool(s.anthropic_api_key or s.openai_api_key or (s.gemini_api_key and s.extra.get("gemini_paid")))
+
+    def _apply_summary_visibility(self):
+        row = self.PAGES.index("Özet")
+        on = self.summary_enabled()
+        self.nav.setRowHidden(row, not on)
+        if not on and self.nav.currentRow() == row:
+            self.go("Quiz")
 
     def _badge(self, name: str) -> str:
         if name == "Kartlar":

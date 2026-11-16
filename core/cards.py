@@ -60,8 +60,68 @@ SYSTEM_CARDS_SRC = SYSTEM_CARDS.replace(
     "İngilizcesini gerekirse parantezde ver). Kaynağın tamamını kapsa, yalnızca ilk sayfalarda kalma.")
 
 
+SYSTEM_FIG_CARDS = """Sen tıp öğrencileri için ŞEKİLLİ bilgi kartı hazırlayan bir eğitimcisin. Sana kaynak kitaptan kesilmiş
+şekiller (röntgen, EKG, histoloji, klinik fotoğraf, şema…) ve geçtikleri sayfanın metni verilir. Her uygun şekil
+için TEK bir kart yaz: ön yüzde şekle bakarak cevaplanacak kısa bir soru ("Bu görüntüdeki bulgu nedir?", "İşaretli
+yapı hangisidir?", "Bu EKG hangi tanıyla uyumludur?"), arka yüzde kısa cevap ve şekilde nereye bakılacağı (1-2
+cümle). Ön yüzde cevabı ya da şeklin başlığını SÖYLEME. Sayfa metniyle uyuşmayan bilgi uydurma. Şekil tıbbi
+açıdan anlamsızsa (logo, süs, okunmayan küçük resim) "usable": false yap.
+YALNIZCA şu JSON'u döndür: {"cards": [{"figure": 1, "usable": true, "front": "soru", "back": "cevap", "topic": "konu"}]}"""
+
+
+def figure_cards(engine, src, llm_factory, n: int = 3, language: str = "tr", should_stop=None) -> list[dict]:
+    """Seçilen PDF sayfalarındaki şekillerden görüntülü kart (ön yüzde görüntü + soru)."""
+    import base64
+    from pathlib import Path
+
+    from . import figures
+    from .quiz import make_llm
+    if n <= 0:
+        return []
+    members = [m for pk in src.packets for m in (pk.members or [pk])]
+    hint: dict[int, list[int]] = {}
+    docs: dict[int, dict] = {}
+    for did in src.doc_ids or [src.doc_id]:
+        d = engine.db.get_document(did)
+        if d and d["kind"] == "pdf" and Path(d["source"]).is_file():
+            docs[did] = dict(d)
+    for m in members:
+        did = next((k for k, d in docs.items() if d["title"] == m.title), None)
+        if did is not None and m.pages:
+            hint.setdefault(did, []).extend(m.pages)
+    if not docs:
+        return []
+    figs = figures.find_figures(list(docs.values()), n + 1, pages_hint=hint or None)
+    out: list[dict] = []
+    for i in range(0, len(figs), 4):
+        if len(out) >= n or (should_stop and should_stop()):
+            break
+        group = figs[i:i + 4]
+        parts: list[dict] = [{"type": "text", "text": f"{len(group)} şekil var; her biri için (uygunsa) 1 kart yaz."
+                              + (" LANGUAGE: write the cards in ENGLISH." if language == "en" else "")}]
+        for k, f in enumerate(group, 1):
+            parts.append({"type": "text", "text": f"--- ŞEKİL {k} — s. {f.page}. Sayfa metni: {f.context[:1500]}"})
+            parts.append({"type": "image", "data": f.image, "mime": "image/jpeg"})
+        data = make_llm(llm_factory, "heavy").complete_json(SYSTEM_FIG_CARDS, parts, max_tokens=6000, temperature=0.3)
+        for c in nz.items(data, "cards", "kartlar", "items"):
+            if not isinstance(c, dict) or c.get("usable") is False:
+                continue
+            try:
+                k = int(c.get("figure", 0))
+            except (TypeError, ValueError):
+                continue
+            front, back = nz.text(c.get("front")), nz.text(c.get("back"))
+            if 1 <= k <= len(group) and front and back:
+                f = group[k - 1]
+                out.append({"front": front, "back": back + f"\n\n🖼 {docs[f.doc_id]['title'][:50]} — s. {f.page}",
+                            "topic": nz.text(c.get("topic") or ""), "image": base64.b64encode(f.image).decode()})
+                if len(out) >= n:
+                    break
+    return out
+
+
 def cards_from_source(engine, src, llm_factory, n: int = 25, topic: str = "", should_stop=None,
-                      language: str = "tr") -> list[dict]:
+                      language: str = "tr", n_images: int = 0) -> list[dict]:
     """Kaynaktan (PDF sayfaları/metin) doğrudan bilgi kartı. Uzun kaynaklarda her bölümden orantılı sayıda."""
     from .quiz import make_llm
     total_pages = sum(max(1, len(p.pages) or sum(len(m.pages) for m in p.members) or 1) for p in src.packets)
@@ -85,4 +145,10 @@ def cards_from_source(engine, src, llm_factory, n: int = 25, topic: str = "", sh
             if front and back and front.lower() not in seen:
                 seen.add(front.lower())
                 out.append({"front": front, "back": back, "topic": nz.text(c.get("topic") or "")})
+    if n_images and not (should_stop and should_stop()):
+        try:
+            out = figure_cards(engine, src, llm_factory, n_images, language, should_stop) + out
+        except Exception as e:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning("Şekilli kart üretilemedi: %s", e)
     return out

@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QProgressBar, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from core.ingest import SUPPORTED_EXT, IngestError, chunk_doc, load_any
+from core.ingest import SUPPORTED_EXT, IngestError, NeedsOCR, chunk_doc, load_any
 
 from .context import AppContext
 
@@ -155,7 +155,7 @@ class LibraryPage(QWidget):
     def add_files(self):
         files, _ = QFileDialog.getOpenFileNames(
             self, "Belge seç", str(Path.home()),
-            "Belgeler (*.pdf *.docx *.txt *.md *.markdown);;Tüm dosyalar (*)")
+            "Belgeler (*.pdf *.docx *.pptx *.txt *.md *.markdown *.jpg *.jpeg *.png *.webp);;Tüm dosyalar (*)")
         if files:
             self.ingest(files)
 
@@ -175,10 +175,12 @@ class LibraryPage(QWidget):
             self.ingest(urls)
 
     def ingest(self, sources: list[str]):
-        if self.ingesting:
-            QMessageBox.information(self, "Lütfen bekleyin", "Önceki ekleme işlemi sürüyor.")
-            return
         if not sources:
+            return
+        if self.ingesting:
+            # beklemek yerine sıraya al: mevcut ekleme bitince otomatik başlar
+            self._queue = getattr(self, "_queue", []) + [s for s in sources if s not in getattr(self, "_queue", [])]
+            self.status.setText(f"{len(self._queue)} belge sırada; önceki ekleme bitince eklenecek.")
             return
         topic = self.topic_le.text().strip()
         db = self.ctx.db
@@ -189,6 +191,7 @@ class LibraryPage(QWidget):
 
         def job(progress, task):
             added, skipped, errors, warnings = 0, 0, [], []
+            needs_ocr = []
             for i, src in enumerate(sources):
                 if task.cancelled:
                     break
@@ -209,12 +212,14 @@ class LibraryPage(QWidget):
                     db.add_document(doc.title, doc.source, doc.kind, chunks, topic=topic)
                     warnings.extend(f"{name}: {w}" for w in doc.warnings)
                     added += 1
+                except NeedsOCR as e:
+                    needs_ocr.append(e.doc)
                 except IngestError as e:
                     errors.append(f"{Path(src).name if not src.startswith('http') else src}: {e}")
                 except Exception as e:  # noqa: BLE001
                     errors.append(f"{src}: beklenmeyen hata — {e}")
                 progress((i + 1, ""))
-            return added, skipped, errors, warnings
+            return added, skipped, errors, warnings, needs_ocr
 
         def on_prog(ev):
             i, msg = ev
@@ -223,7 +228,8 @@ class LibraryPage(QWidget):
                 self.status.setText(msg)
 
         def on_res(res):
-            added, skipped, errors, warnings = res
+            added, skipped, errors, warnings, needs_ocr = res
+            self._pending_ocr = needs_ocr
             parts = [f"{added} belge eklendi"]
             if skipped:
                 parts.append(f"{skipped} zaten vardı")
@@ -238,6 +244,89 @@ class LibraryPage(QWidget):
         def on_fin():
             self.ingesting = False
             self.prog.hide()
+            ocr = getattr(self, "_pending_ocr", [])
+            self._pending_ocr = []
+            if ocr:
+                self.offer_ocr(ocr, topic)
+            elif getattr(self, "_queue", None):
+                q, self._queue = self._queue, []
+                self.ingest(q)
+
+        self.ctx.runner.start(job, on_result=on_res, on_progress=on_prog,
+                              on_error=lambda e: QMessageBox.warning(self, "Hata", e), on_finished=on_fin)
+
+    def offer_ocr(self, docs: list, topic: str):
+        """Taranmış PDF / fotoğraf: yapay zekâyla metne çevirmeyi öner."""
+        from core.ocr import estimate_calls
+        pages = sum(len(d.empty_pages) or 1 for d in docs)
+        calls = sum(estimate_calls(len(d.empty_pages) or 1) for d in docs)
+        names = "\n".join(f"• {d.title[:60]} — {len(d.empty_pages) or 1} sayfa" for d in docs[:8])
+        if not self.ctx.settings.has_any_key:
+            QMessageBox.warning(self, "Taranmış belge", f"Bu belgelerde metin yok (taranmış/fotoğraf):\n{names}\n\n"
+                                "Yapay zekâyla okumak için önce Ayarlar'dan API anahtarı gir.")
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Taranmış belge")
+        box.setText(f"Bu belgeler taranmış (resim) ya da fotoğraf; içlerinde seçilebilir metin yok:\n{names}\n\n"
+                    f"Yapay zekâ sayfaları okuyup metne çevirebilir: toplam {pages} sayfa, yaklaşık {calls} istek. "
+                    "Uzun kitaplarda bu birkaç dakika sürer; ücretsiz Gemini'de günlük sınıra takılırsa okunabilen "
+                    "sayfalar eklenir, kalanı için ekleme tekrar yapılabilir.")
+        go = box.addButton("Metne çevir ve ekle", QMessageBox.AcceptRole)
+        box.addButton("Vazgeç", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not go:
+            return
+        from core.ingest import apply_ocr, chunk_doc
+        from core.ocr import ocr_doc
+        db, factory = self.ctx.db, self.ctx.engine.llm_factory
+        self.ingesting = True
+        self.prog.setRange(0, len(docs) * 100)
+        self.prog.setValue(0)
+        self.prog.show()
+
+        def job(progress, task):
+            added, errors, warnings = 0, [], []
+            for i, d in enumerate(docs):
+                if task.cancelled:
+                    break
+                try:
+                    def on_page(p, n, i=i, d=d):
+                        progress((i + p / max(1, n), f"Yapay zekâ okuyor: {d.title[:40]} — {p}/{n} sayfa"))
+                    texts = ocr_doc(d, factory, on_page, should_stop=lambda: task.cancelled)
+                    doc = apply_ocr(d, texts)
+                    chunks = chunk_doc(doc)
+                    if not chunks:
+                        raise IngestError("Sayfalar okunamadı.")
+                    db.add_document(doc.title, doc.source, "pdf" if doc.kind == "pdf" else doc.kind, chunks,
+                                    topic=topic)
+                    warnings.extend(f"{d.title}: {w}" for w in doc.warnings)
+                    added += 1
+                except Exception as e:  # noqa: BLE001
+                    errors.append(f"{d.title}: {e}")
+            return added, errors, warnings
+
+        def on_prog(ev):
+            i, msg = ev
+            self.prog.setValue(int(i * 100))
+            if msg:
+                self.status.setText(msg)
+
+        def on_res(res):
+            added, errors, warnings = res
+            self.status.setText(f"{added} taranmış belge metne çevrilip eklendi.")
+            if errors:
+                QMessageBox.warning(self, "Bazı belgeler okunamadı", "\n\n".join(errors[:8]))
+            if warnings:
+                QMessageBox.information(self, "Eklendi, ancak dikkat", "\n\n".join(warnings[:8]))
+            if added:
+                self.ctx.notify_library_changed()
+
+        def on_fin():
+            self.ingesting = False
+            self.prog.hide()
+            if getattr(self, "_queue", None):
+                q, self._queue = self._queue, []
+                self.ingest(q)
 
         self.ctx.runner.start(job, on_result=on_res, on_progress=on_prog,
                               on_error=lambda e: QMessageBox.warning(self, "Hata", e), on_finished=on_fin)

@@ -277,6 +277,38 @@ def run(pdf: str | None, out: str) -> int:
                 raise RuntimeError(f"Yeterli kart çıkmadı: {cards}")
             return {"cards": len(cards), "sample": [f"{c['front'][:70]} → {c['back'][:40]}" for c in cards[:3]]}
 
+        def scanned_ocr():
+            import tempfile
+            import pypdfium2 as pdfium
+            from .ingest import NeedsOCR, apply_ocr, load_any
+            from .ocr import ocr_doc
+            src_pdf = pdfium.PdfDocument(db.list_documents()[0]["source"])
+            img = src_pdf[5].render(scale=1.5).to_pil().convert("RGB")
+            src_pdf.close()
+            tmp = Path(tempfile.mkdtemp()) / "taranmis.pdf"
+            img.save(tmp)
+            try:
+                load_any(str(tmp))
+                raise RuntimeError("Taranmış PDF metinli sanıldı")
+            except NeedsOCR as e:
+                doc = e.doc
+            texts = ocr_doc(doc, factory)
+            doc = apply_ocr(doc, texts)
+            full = " ".join(t for _, t in doc.sections)
+            if "ketoasidoz" not in full.lower():
+                raise RuntimeError(f"OCR metni beklenen içeriği taşımıyor: {full[:300]!r}")
+            return {"pages": len(texts), "chars": len(full), "sample": full[:200]}
+
+        def figure_cards_step():
+            from .cards import figure_cards
+            from .summary import SummaryEngine
+            se = SummaryEngine(db, retr2, factory)
+            src = se.build_source(db.list_documents()[0]["id"], "8-9")
+            cards = figure_cards(se, src, factory, n=2)
+            if not cards:
+                raise RuntimeError("Şekilli kart çıkmadı")
+            return {"cards": len(cards), "sample": [f"{c['front'][:80]} → {c['back'][:60]}" for c in cards]}
+
         def source_cards():
             from .cards import cards_from_source
             from .summary import SummaryEngine
@@ -402,6 +434,8 @@ def run(pdf: str | None, out: str) -> int:
                  (f"{prov}: şekilli sorular (kitaptaki görüntülerden)", figure_quiz),
                  (f"{prov}: bilgi kartları (özetten)", flashcards),
                  (f"{prov}: bilgi kartları (doğrudan kaynaktan)", source_cards),
+                 (f"{prov}: şekilli bilgi kartları", figure_cards_step),
+                 (f"{prov}: taranmış sayfayı metne çevirme (OCR)", scanned_ocr),
                          (f"{prov}: İngilizce soru + çeviri + kelime tanımı", english_and_translate),
                          (f"{prov}: tekrar quizi (5 test + 5 eşleştirme) + kısa cevap puanı", review_and_short_answer), (f"{prov}: klasik cevap puanlama", grade),
                          (f"{prov}: vaka üretimi (paraklinik + test)", case),
