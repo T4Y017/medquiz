@@ -40,6 +40,7 @@ def app_token() -> str:
 
 
 def can_send_directly() -> bool:
+    """Derlemede FEEDBACK_TOKEN sırrı varsa geri bildirim, kullanıcı hiçbir hesaba girmeden gönderilir."""
     return bool(app_token())
 
 
