@@ -176,6 +176,31 @@ def main() -> int:
     step(lambda: check("geri bildirim kaydı", len(ctx.db.list_feedback()) == 1))
     step(lambda: (w.go("İstatistik"), check("istatistik", w.stats.t_topic.rowCount() >= 1)))
 
+    def gemini_network_error():
+        # Ağ bağlantıyı keserse (ConnectionResetError 10054) kullanıcı teknik ayrıntı yerine anlaşılır bir açıklama görür
+        import requests
+        from core.config import Settings
+        from core.llm import LLMError, RoutedLLM
+        s = Settings()
+        s.gemini_api_key, s.provider = "test", "gemini"
+
+        def reset(*a, **k):
+            raise requests.ConnectionError(("Connection aborted.", ConnectionResetError(10054, "zorla kapatıldı")))
+        old_post, old_budget = requests.Session.post, RoutedLLM.WAIT_BUDGET
+        requests.Session.post, RoutedLLM.WAIT_BUDGET = reset, 0
+        try:
+            RoutedLLM(s).complete("sistem", [{"role": "user", "content": "deneme"}])
+            check("Gemini bağlantı hatası açıklaması", False, "hata bekleniyordu")
+        except LLMError as e:
+            msg = str(e)
+            check("Gemini bağlantı hatası açıklaması", getattr(e, "network", False) and "10054" not in msg
+                  and "Connection aborted" not in msg and "telefonun internet paylaşımı" in msg
+                  and "ikinci bir yapay zekâ anahtarı" in msg and msg.count("bağlanılamadı") == 1, msg)
+        finally:
+            requests.Session.post, RoutedLLM.WAIT_BUDGET = old_post, old_budget
+            RoutedLLM._cooldown_until.clear()
+    step(gemini_network_error)
+
     def sync_test():
         from core.config import Settings
         from core.db import Database

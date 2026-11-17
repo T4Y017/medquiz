@@ -14,14 +14,22 @@ log = logging.getLogger(__name__)
 
 class LLMError(Exception):
     def __init__(self, msg: str, fallback_ok: bool = False, transient: bool = False, provider_wide: bool = False,
-                 cooldown: float = 0.0, retry_same: bool = True, retry_after: float = 0.0):
+                 cooldown: float = 0.0, retry_same: bool = True, retry_after: float = 0.0, network: bool = False):
         super().__init__(msg)
+        self.network = network          # bağlantı kurulamadı/koptu (anahtar ya da kota sorunu değil)
         self.retry_after = retry_after  # sağlayıcının önerdiği bekleme (sn); 0 = bilinmiyor
         self.cooldown = cooldown        # bu model kaç saniye dinlenmeye alınsın
         self.retry_same = retry_same    # aynı modeli hemen bir kez daha denemek mantıklı mı
         self.provider_wide = provider_wide  # anahtar/kota/izin: aynı sağlayıcının diğer modelleri de başarısız olur
         self.fallback_ok = fallback_ok  # başka bir model/sağlayıcıyla denemek mantıklı mı?
         self.transient = transient      # geçici (yoğunluk, hız sınırı, zaman aşımı): kısa bekleyip tekrar denenebilir
+
+
+def _network_msg(name: str) -> str:
+    """Bağlantı hatası için kullanıcıya teknik ayrıntısız, ne yapacağını söyleyen açıklama."""
+    return (f"{name} sunucusuna bağlanılamadı: bağlantı internet tarafında kesildi. İnternetini kontrol et; "
+            "okul/hastane Wi-Fi'si, VPN ya da antivirüs programı engelliyor olabilir. Başka bir internetle "
+            "(ör. telefonun internet paylaşımı) tekrar dene.")
 
 
 def _classify(e: Exception, provider: str) -> LLMError:
@@ -47,7 +55,7 @@ def _classify(e: Exception, provider: str) -> LLMError:
         if "timed out" in low or "timeout" in low:
             return LLMError(f"{name} zamanında yanıt vermedi (sunucu yoğun olabilir).", True, True,
                             cooldown=120, retry_same=False)
-        return LLMError(f"{name} sunucusuna bağlanılamadı. İnternet bağlantınızı kontrol edin.", True, True)
+        return LLMError(_network_msg(name), True, True, network=True)
     if status and status >= 500 or "overloaded" in low or "unavailable" in low:
         return LLMError(f"{name} sunucusu şu an yanıt veremiyor (yoğunluk). Biraz sonra tekrar deneyin.", True, True,
                         cooldown=60)
@@ -63,7 +71,8 @@ def _from_gemini(e, model: str) -> LLMError:
         return LLMError(f"Gemini ({model}) zamanında yanıt vermedi.", True, True, cooldown=60, retry_same=True,
                         retry_after=3)
     if e.kind == "network":
-        return LLMError(f"Gemini sunucusuna bağlanılamadı: {msg}", True, True, retry_after=3)
+        # Teknik ayrıntı (ConnectionResetError vb.) günlüğe yazılır; kullanıcıya anlaşılır açıklama gösterilir
+        return LLMError(_network_msg("Gemini"), True, True, retry_after=3, network=True)
     if e.kind == "blocked":
         return LLMError(f"Gemini yanıtı güvenlik filtresine takıldı.", True)
     if e.kind in ("length", "empty"):
@@ -419,6 +428,7 @@ class RoutedLLM:
 
     def _run(self, fn):
         errors: list[str] = []
+        all_network = True
         dead: set[str] = set()
         order = self._ordered()
         waited = [0.0]
@@ -440,6 +450,7 @@ class RoutedLLM:
                     if self._handle(e, p, m, attempt, waited):
                         continue
                     errors.append(f"{PROVIDERS[p]['short']} · {m}: {e}")
+                    all_network = all_network and getattr(e, "network", False)
                     if not e.fallback_ok:
                         raise LLMError(str(e)) from e
                     if getattr(e, "provider_wide", False):
@@ -450,9 +461,21 @@ class RoutedLLM:
                 self.notes.append(f"{p}/{m} yanıt vermedi → {PROVIDERS[nxt[0]]['short']} · {nxt[1]} deneniyor.")
                 self._status(f"{PROVIDERS[p]['short']} · {m} yanıt veremedi ({errors[-1].split(': ', 1)[-1][:80]}) "
                              f"→ {PROVIDERS[nxt[0]]['short']} · {nxt[1]} ile devam ediliyor.")
+        raise self._final_error(errors, all_network)
+
+    def _final_error(self, errors: list[str], all_network: bool) -> LLMError:
+        """Tüm modeller başarısız olduğunda gösterilecek hata. Hepsi bağlantı hatasıysa aynı açıklama her model
+        için tekrarlanmaz; tek sağlayıcı kayıtlıysa ikinci bir anahtar eklemek önerilir."""
+        if errors and all_network:
+            names = ", ".join(e.split(": ", 1)[0] for e in errors)
+            tip = ""
+            if len(self.providers) == 1:
+                tip = ("\n\nİpucu: Ayarlar'dan ikinci bir yapay zekâ anahtarı (Claude ya da OpenAI) eklersen, biri "
+                       "bağlanamadığında diğeri otomatik devreye girer.")
+            return LLMError(f"{errors[-1].split(': ', 1)[-1]}\n(Denenen: {names}){tip}", network=True)
         if len(errors) > 1:
-            raise LLMError("Hiçbir yapay zekâ yanıt veremedi:\n• " + "\n• ".join(errors))
-        raise LLMError(errors[0] if errors else "Bilinmeyen hata")
+            return LLMError("Hiçbir yapay zekâ yanıt veremedi:\n• " + "\n• ".join(errors))
+        return LLMError(errors[0] if errors else "Bilinmeyen hata")
 
     def complete(self, system: str, messages: list[dict], max_tokens: int = 4096, temperature: float = 0.7) -> str:
         return self._run(lambda c: c.complete(system, messages, max_tokens=max_tokens, temperature=temperature))
@@ -466,6 +489,7 @@ class RoutedLLM:
                temperature: float = 0.4) -> Iterator[str]:
         """İlk parça gelmeden hata olursa tekrar dener / sıradaki modele geçer; yayın başladıktan sonra geçmez."""
         errors: list[str] = []
+        all_network = True
         dead: set[str] = set()
         waited = [0.0]
         order = self._ordered()
@@ -494,6 +518,7 @@ class RoutedLLM:
                     if self._handle(e, p, m, attempt, waited):
                         continue
                     errors.append(f"{PROVIDERS[p]['short']} · {m}: {e}")
+                    all_network = all_network and getattr(e, "network", False)
                     if not e.fallback_ok:
                         raise LLMError(str(e)) from e
                     if getattr(e, "provider_wide", False):
@@ -503,7 +528,7 @@ class RoutedLLM:
             if nxt:
                 self._status(f"{PROVIDERS[p]['short']} · {m} yanıt veremedi → "
                              f"{PROVIDERS[nxt[0]]['short']} · {nxt[1]} ile devam ediliyor.")
-        raise LLMError(errors[0] if len(errors) == 1 else "Hiçbir yapay zekâ yanıt veremedi:\n• " + "\n• ".join(errors))
+        raise self._final_error(errors, all_network)
 
 
 def parse_json(text: str) -> dict:
@@ -579,7 +604,9 @@ def test_provider(settings: Settings, provider: str) -> dict:
                         return {"label": c.label, "secs": time.time() - t0, "question": q, "notes": notes}
                 except LLMError as e2:
                     last = e = e2
-            if e.transient:
+            if getattr(e, "network", False):
+                notes.append(f"{m}: {e}")      # bağlantı kurulamadı: anahtarın geçerli olup olmadığı bilinmiyor
+            elif e.transient:
                 notes.append(f"{m} şu an meşgul ({e}); anahtar geçerli")
             else:
                 notes.append(f"{m}: {e}")
