@@ -610,4 +610,34 @@ def test_provider(settings: Settings, provider: str) -> dict:
                 notes.append(f"{m} şu an meşgul ({e}); anahtar geçerli")
             else:
                 notes.append(f"{m}: {e}")
+    if last is not None and getattr(last, "network", False):
+        raise LLMError(f"{last}\n\n{network_probe(provider)}", False, True, network=True)
     raise last or LLMError("Test başarısız")
+
+
+PROBE_HOSTS = {"gemini": "https://generativelanguage.googleapis.com/", "anthropic": "https://api.anthropic.com/",
+               "openai": "https://api.openai.com/"}
+
+
+def network_probe(provider: str) -> str:
+    """Bağlantı hatasında nedeni ayırt et: internet yok mu, yoksa yalnızca yapay zekâ adresi mi engelleniyor?"""
+    import requests
+
+    def ok(url: str) -> bool:
+        try:
+            requests.get(url, timeout=8)
+            return True               # herhangi bir HTTP cevabı (404 dahil) = adrese ulaşılabiliyor
+        except requests.RequestException:
+            return False
+    general = ok("https://www.google.com/generate_204") or ok("https://www.cloudflare.com/")
+    api = ok(PROBE_HOSTS.get(provider, PROBE_HOSTS["gemini"]))
+    name = {"gemini": "Gemini", "anthropic": "Claude", "openai": "OpenAI"}.get(provider, provider)
+    if not general and not api:
+        return "Tanı: Bu bilgisayar şu an internete ulaşamıyor. İnternet bağlantını kontrol et."
+    if general and not api:
+        return (f"Tanı: İnternet var ama {name} sunucusuna ulaşılamıyor. Bu genellikle bulunduğun ağın (okul, hastane, "
+                "yurt Wi-Fi'si), VPN'in ya da antivirüs programının bu adresi engellemesinden olur; API anahtarınla "
+                "ilgili değildir. Telefonunun internet paylaşımıyla dene; düzelirse sorun ağdadır. Ayarlar'dan ikinci "
+                "bir yapay zekâ anahtarı (Claude ya da OpenAI) eklersen biri engellendiğinde diğeri devreye girer.")
+    return (f"Tanı: {name} sunucusuna şu an ulaşılabiliyor; bağlantı kopması geçici olmuş olabilir. Birkaç dakika sonra "
+            "tekrar dene.")
